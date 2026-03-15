@@ -38,7 +38,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-tauri-mcp-plugin = { git = "https://github.com/lumither/tauri-mcp", tag = "v0.1.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -57,3 +56,6 @@ vibe-studio-commands = { path = "crates/commands" }
 tauri-plugin-window-state = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+tauri-mcp-plugin = { git = "https://github.com/lumither/tauri-mcp", tag = "v0.1.2" }

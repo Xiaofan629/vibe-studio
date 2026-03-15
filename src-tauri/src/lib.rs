@@ -1,4 +1,5 @@
 use tauri::Manager;
+#[cfg(not(target_os = "windows"))]
 use tauri_mcp_plugin::McpPlugin;
 use vibe_studio_agent::process::AgentProcessManager;
 use vibe_studio_commands::AppState;
@@ -8,10 +9,16 @@ use vibe_studio_terminal::manager::TerminalManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(McpPlugin::new().build())
+        .plugin(tauri_plugin_dialog::init());
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        builder = builder.plugin(McpPlugin::new().build());
+    }
+
+    builder
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::block_on(async {
