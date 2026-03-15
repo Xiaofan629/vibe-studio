@@ -17,6 +17,61 @@ struct TerminalInstance {
     _write_task: tokio::task::JoinHandle<()>,
 }
 
+fn resolve_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|shell| !shell.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+fn configure_shell_launch(cmd: &mut CommandBuilder, shell: &str) {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+
+    match shell_name {
+        // Finder-launched macOS apps don't inherit the user's PATH, so we
+        // start common shells as login + interactive shells to load ~/.zprofile
+        // before ~/.zshrc and recover Homebrew-managed prompt tooling.
+        "bash" | "sh" | "zsh" => cmd.arg("-il"),
+        "fish" => {
+            cmd.arg("--interactive");
+            cmd.arg("--login");
+        }
+        _ => {}
+    }
+}
+
+fn apply_terminal_defaults(cmd: &mut CommandBuilder) {
+    let term = cmd.get_env("TERM");
+    if term.is_none() || term == Some("dumb".as_ref()) {
+        cmd.env("TERM", "xterm-256color");
+    }
+    if cmd.get_env("COLORTERM").is_none() {
+        cmd.env("COLORTERM", "truecolor");
+    }
+    if cmd.get_env("TERM_PROGRAM").is_none() {
+        cmd.env("TERM_PROGRAM", "vibe-studio");
+    }
+    if cmd.get_env("LANG").is_none()
+        && cmd.get_env("LC_ALL").is_none()
+        && cmd.get_env("LC_CTYPE").is_none()
+    {
+        cmd.env("LANG", "en_US.UTF-8");
+        cmd.env("LC_CTYPE", "en_US.UTF-8");
+    }
+}
+
+fn build_shell_command(shell: &str, cwd: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.cwd(cwd);
+    configure_shell_launch(&mut cmd, shell);
+    apply_terminal_defaults(&mut cmd);
+
+    cmd
+}
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self {
@@ -43,11 +98,8 @@ impl TerminalManager {
             })
             .map_err(|e| TerminalError::Pty(e.to_string()))?;
 
-        // Determine the shell
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-
-        let mut cmd = CommandBuilder::new(&shell);
-        cmd.cwd(cwd);
+        let shell = resolve_shell();
+        let cmd = build_shell_command(&shell, cwd);
 
         // Spawn the shell process in the PTY
         let _child = pty_pair
@@ -170,5 +222,38 @@ impl TerminalManager {
 impl Default for TerminalManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_terminal_defaults, build_shell_command, configure_shell_launch};
+    use portable_pty::CommandBuilder;
+    use std::path::Path;
+
+    #[test]
+    fn zsh_shells_are_started_as_login_interactive() {
+        let cmd = build_shell_command("/bin/zsh", Path::new("/tmp"));
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(argv, vec!["/bin/zsh".to_string(), "-il".to_string()]);
+    }
+
+    #[test]
+    fn terminal_defaults_enable_utf8_and_color() {
+        let mut cmd = CommandBuilder::new("/bin/zsh");
+        cmd.env_clear();
+        configure_shell_launch(&mut cmd, "/bin/zsh");
+        apply_terminal_defaults(&mut cmd);
+
+        assert_eq!(cmd.get_env("TERM"), Some("xterm-256color".as_ref()));
+        assert_eq!(cmd.get_env("COLORTERM"), Some("truecolor".as_ref()));
+        assert_eq!(cmd.get_env("TERM_PROGRAM"), Some("vibe-studio".as_ref()));
+        assert_eq!(cmd.get_env("LANG"), Some("en_US.UTF-8".as_ref()));
+        assert_eq!(cmd.get_env("LC_CTYPE"), Some("en_US.UTF-8".as_ref()));
     }
 }
