@@ -6,8 +6,6 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "process:default",
-    "tauri-mcp:allow-js-result",
-    "tauri-mcp:allow-invoke-command"
+    "process:default"
   ]
 }

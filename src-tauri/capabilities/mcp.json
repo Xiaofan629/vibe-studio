@@ -1,0 +1,10 @@
+{
+  "identifier": "mcp",
+  "description": "MCP plugin capability (non-Windows only)",
+  "windows": ["main"],
+  "platforms": ["linux", "macOS"],
+  "permissions": [
+    "tauri-mcp:allow-js-result",
+    "tauri-mcp:allow-invoke-command"
+  ]
+}
