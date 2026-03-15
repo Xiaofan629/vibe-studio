@@ -1,6 +1,8 @@
 "use client"
 
 import "@xterm/xterm/css/xterm.css"
+import { Terminal } from "@xterm/xterm"
+import { FitAddon } from "@xterm/addon-fit"
 import { useEffect, useRef } from "react"
 import { invoke, listen } from "@/lib/tauri"
 
@@ -206,9 +208,6 @@ export function TerminalPanel({
 
     const initTerminal = async () => {
       try {
-        const { Terminal } = await import("@xterm/xterm")
-        const { FitAddon } = await import("@xterm/addon-fit")
-
         if (activeRepoRef.current !== cacheKey) {
           containerEl.style.display = "none"
         }

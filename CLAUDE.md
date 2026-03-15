@@ -11,7 +11,6 @@ Vibe Studio 是一个基于 Tauri 2 + Next.js 16 + Rust 的本地优先桌面 AI
 - 首页支持最近项目、目录浏览、仓库克隆、工作区创建与看板管理。
 - 工作区支持多仓库挂载，并自动创建 Git worktree。
 - 后端已接入 `Claude Code`、`Gemini CLI`、`Codex` 的发现与启动。
-- 主工作区页面当前重点打磨 `Claude Code` 与 `Codex` 的聊天体验。
 - 支持流式 Agent 输出、评审上下文构建、远端 PR 评论导入、提交与 PR 内容生成。
 - 支持内置 PTY 终端，以及 `VSCode`、`Cursor`、`Trae` 外部编辑器联动。
 
