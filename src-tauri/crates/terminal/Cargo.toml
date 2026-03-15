@@ -1,0 +1,11 @@
+[package]
+name = "vibe-studio-terminal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+portable-pty = "0.8"
+tauri = { version = "2", features = [] }

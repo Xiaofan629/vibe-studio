@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capability for main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:default",
+    "process:default",
+    "tauri-mcp:allow-js-result",
+    "tauri-mcp:allow-invoke-command"
+  ]
+}

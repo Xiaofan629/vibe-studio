@@ -1,0 +1,101 @@
+{
+  "app": {
+    "title": "Vibe Studio",
+    "description": "Desktop Vibe-Coding Editor"
+  },
+  "sidebar": {
+    "projects": "Projects",
+    "sessions": "Sessions",
+    "settings": "Settings",
+    "addProject": "Add Project",
+    "cloneProject": "Clone Project"
+  },
+  "topbar": {
+    "branch": "Branch",
+    "agent": "Agent",
+    "start": "Start",
+    "stop": "Stop",
+    "openIn": "Open In"
+  },
+  "tabs": {
+    "chat": "Chat",
+    "review": "Review",
+    "multiAgent": "Multi-Agent",
+    "terminal": "Terminal"
+  },
+  "agent": {
+    "claudeCode": "Claude Code",
+    "geminiCli": "Gemini CLI",
+    "codex": "Codex",
+    "running": "Running",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "killed": "Stopped",
+    "idle": "Idle",
+    "sendMessage": "Send a message...",
+    "thinking": "Thinking..."
+  },
+  "multiAgent": {
+    "treeView": "Tree View",
+    "panelView": "Panel View",
+    "timelineView": "Timeline"
+  },
+  "diff": {
+    "unified": "Unified",
+    "split": "Split",
+    "ignoreWhitespace": "Ignore Whitespace",
+    "wrapText": "Wrap Text",
+    "filesChanged": "files changed",
+    "additions": "additions",
+    "deletions": "deletions"
+  },
+  "review": {
+    "addComment": "Add Comment",
+    "resolve": "Resolve",
+    "unresolvedComments": "Unresolved Comments",
+    "submitReview": "Submit Review"
+  },
+  "commit": {
+    "oneClick": "One-Click Commit",
+    "generateMessage": "Generate Commit Message",
+    "commitTitle": "Commit Title",
+    "commitBody": "Commit Body",
+    "commit": "Commit",
+    "createPr": "Create PR",
+    "pushAndPr": "Push & Create PR"
+  },
+  "editor": {
+    "vscode": "VSCode",
+    "cursor": "Cursor",
+    "trae": "Trae"
+  },
+  "settings": {
+    "title": "Settings",
+    "agents": "Agent Config",
+    "appearance": "Appearance",
+    "language": "Language",
+    "theme": "Theme"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "close": "Close",
+    "loading": "Loading...",
+    "noData": "No data",
+    "optional": "optional"
+  },
+  "project": {
+    "cloneRepo": "Clone Repository",
+    "repoUrl": "Repository URL",
+    "targetDir": "Target Directory",
+    "clone": "Clone",
+    "selectProject": "Select a project to start",
+    "noProject": "No projects yet",
+    "startCoding": "Select an Agent to start Vibe Coding",
+    "reviewHint": "Review and comment on code changes",
+    "multiAgentHint": "Claude Code Multi-Agent Visualization"
+  }
+}

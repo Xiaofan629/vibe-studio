@@ -1,0 +1,101 @@
+{
+  "app": {
+    "title": "Vibe Studio",
+    "description": "桌面 Vibe-Coding 编辑器"
+  },
+  "sidebar": {
+    "projects": "项目",
+    "sessions": "会话",
+    "settings": "设置",
+    "addProject": "添加项目",
+    "cloneProject": "克隆项目"
+  },
+  "topbar": {
+    "branch": "分支",
+    "agent": "Agent",
+    "start": "开始",
+    "stop": "停止",
+    "openIn": "打开方式"
+  },
+  "tabs": {
+    "chat": "对话",
+    "review": "评审",
+    "multiAgent": "多 Agent",
+    "terminal": "终端"
+  },
+  "agent": {
+    "claudeCode": "Claude Code",
+    "geminiCli": "Gemini CLI",
+    "codex": "Codex",
+    "running": "运行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "killed": "已停止",
+    "idle": "空闲",
+    "sendMessage": "发送消息...",
+    "thinking": "思考中..."
+  },
+  "multiAgent": {
+    "treeView": "树状图",
+    "panelView": "并行面板",
+    "timelineView": "时间线"
+  },
+  "diff": {
+    "unified": "统一视图",
+    "split": "分栏视图",
+    "ignoreWhitespace": "忽略空格",
+    "wrapText": "自动换行",
+    "filesChanged": "个文件变更",
+    "additions": "新增",
+    "deletions": "删除"
+  },
+  "review": {
+    "addComment": "添加评论",
+    "resolve": "标记解决",
+    "unresolvedComments": "未解决评论",
+    "submitReview": "提交评审"
+  },
+  "commit": {
+    "oneClick": "一键提交",
+    "generateMessage": "AI 生成提交信息",
+    "commitTitle": "提交标题",
+    "commitBody": "提交描述",
+    "commit": "提交",
+    "createPr": "创建 PR",
+    "pushAndPr": "推送并创建 PR"
+  },
+  "editor": {
+    "vscode": "VSCode",
+    "cursor": "Cursor",
+    "trae": "Trae"
+  },
+  "settings": {
+    "title": "设置",
+    "agents": "Agent 配置",
+    "appearance": "外观",
+    "language": "语言",
+    "theme": "主题"
+  },
+  "common": {
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "delete": "删除",
+    "close": "关闭",
+    "loading": "加载中...",
+    "noData": "暂无数据",
+    "optional": "可选"
+  },
+  "project": {
+    "cloneRepo": "克隆仓库",
+    "repoUrl": "仓库地址",
+    "targetDir": "目标目录",
+    "clone": "克隆",
+    "selectProject": "选择一个项目开始",
+    "noProject": "暂无项目",
+    "startCoding": "选择一个 Agent 开始 Vibe Coding",
+    "reviewHint": "对代码变更进行评审和评论",
+    "multiAgentHint": "Claude Code 多 Agent 可视化"
+  }
+}

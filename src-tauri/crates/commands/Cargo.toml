@@ -1,0 +1,20 @@
+[package]
+name = "vibe-studio-commands"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sea-orm = { workspace = true }
+tauri = { version = "2", features = [] }
+dirs = "6"
+vibe-studio-db = { path = "../db" }
+vibe-studio-git = { path = "../git" }
+vibe-studio-agent = { path = "../agent" }
+vibe-studio-terminal = { path = "../terminal" }
+vibe-studio-review = { path = "../review" }

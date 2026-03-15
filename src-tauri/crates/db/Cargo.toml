@@ -1,0 +1,17 @@
+[package]
+name = "vibe-studio-db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+dirs = "6"
+tauri = { version = "2", features = [] }
+async-trait = "0.1"

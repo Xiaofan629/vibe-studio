@@ -1,0 +1,59 @@
+[workspace]
+members = [
+  ".",
+  "crates/git",
+  "crates/agent",
+  "crates/db",
+  "crates/terminal",
+  "crates/review",
+  "crates/commands",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt"] }
+uuid = { version = "1", features = ["v4"] }
+sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+sea-orm-migration = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+
+[package]
+name = "vibe-studio"
+version = "0.1.0"
+description = "Desktop Vibe-Coding Editor"
+authors = []
+edition = "2021"
+
+[lib]
+name = "vibe_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-mcp-plugin = { git = "https://github.com/lumither/tauri-mcp", tag = "v0.1.2" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+dirs = "6"
+vibe-studio-git = { path = "crates/git" }
+vibe-studio-agent = { path = "crates/agent" }
+vibe-studio-db = { path = "crates/db" }
+vibe-studio-terminal = { path = "crates/terminal" }
+vibe-studio-review = { path = "crates/review" }
+vibe-studio-commands = { path = "crates/commands" }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
