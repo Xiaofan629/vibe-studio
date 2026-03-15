@@ -23,7 +23,6 @@ Vibe Studio 是一个基于 Tauri 2 + Next.js 16 + Rust 的本地优先桌面 AI
 - 后端：Rust 2021 + Tokio
 - 数据库：SeaORM 1.1 + SQLite
 - 终端：xterm.js
-- 国际化：next-intl
 
 ## 常用命令
 
