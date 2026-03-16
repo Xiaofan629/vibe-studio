@@ -3,6 +3,7 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from "react"
 import { useTheme } from "next-themes"
 import { FileDiff } from "@pierre/diffs/react"
+import { Copy, Check } from "lucide-react"
 import type {
   DiffLineAnnotation,
   AnnotationSide,
@@ -14,6 +15,7 @@ import { useDiffViewStore } from "@/stores/diffViewStore"
 import { InlineComment } from "@/components/review/InlineComment"
 import { CommentEditor } from "@/components/review/CommentEditor"
 import { invoke } from "@/lib/tauri"
+import { toast } from "sonner"
 
 interface DiffViewerProps {
   files: DiffFile[]
@@ -396,6 +398,7 @@ export function DiffViewer({
     Record<string, FileContentPair>
   >({})
   const [visibleFiles, setVisibleFiles] = useState<Set<string>>(new Set())
+  const [copiedFile, setCopiedFile] = useState<string | null>(null)
 
   useEffect(() => {
     const observers = new Map<string, IntersectionObserver>()
@@ -576,6 +579,39 @@ export function DiffViewer({
     [onLineClick]
   )
 
+  const handleCopyFile = useCallback(
+    async (filePath: string) => {
+      const contentPair = contentsByPath[filePath]
+      const file = files.find((f) => getFilePath(f) === filePath)
+
+      if (!contentPair || !file) {
+        toast.error("无法复制文件内容：文件未加载")
+        return
+      }
+
+      try {
+        // Copy the new file content (after changes)
+        const fileContent = contentPair.newFile.contents
+
+        if (!fileContent || fileContent.trim() === "") {
+          toast.error("文件内容为空")
+          return
+        }
+
+        await navigator.clipboard.writeText(fileContent)
+        setCopiedFile(filePath)
+        toast.success(`已复制 ${filePath} 的完整内容`)
+
+        // Reset copied state after 2 seconds
+        setTimeout(() => setCopiedFile(null), 2000)
+      } catch (err) {
+        console.error("Failed to copy:", err)
+        toast.error("复制失败，请重试")
+      }
+    },
+    [contentsByPath, files]
+  )
+
   if (files.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -609,8 +645,25 @@ export function DiffViewer({
                 isSelected ? "ring-1 ring-primary/40" : "",
               ].join(" ")}
             >
-              <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-muted/50 px-4 py-2 backdrop-blur">
-                <span className="text-sm font-mono">{filePath}</span>
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-muted/50 px-4 py-2 backdrop-blur">
+                <span className="text-sm font-mono truncate">{filePath}</span>
+                <button
+                  onClick={() => handleCopyFile(filePath)}
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  title="复制文件完整内容（修改后）"
+                >
+                  {copiedFile === filePath ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-green-500" />
+                      <span>已复制</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">复制内容</span>
+                    </>
+                  )}
+                </button>
               </div>
 
               {!isVisible ? (

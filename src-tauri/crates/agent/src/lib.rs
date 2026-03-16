@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod claude_session_reader;
+pub mod command;
 pub mod discovery;
 pub mod multi_agent;
 pub mod parsers;

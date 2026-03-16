@@ -143,9 +143,11 @@ function scheduleInitialCommand(
   entry.initialCommandRan = true
 
   window.setTimeout(() => {
+    // Show git status first to display current branch, then run the initial command
+    const gitStatusCmd = "git status --short --branch 2>/dev/null || true\n"
     invoke("write_terminal", {
       terminalId: entry.terminalId,
-      data: encodeTerminalData(`${initialCommand}\r`),
+      data: encodeTerminalData(`${gitStatusCmd}${initialCommand}\r`),
     }).catch(() => {
       entry.initialCommandRan = false
     })

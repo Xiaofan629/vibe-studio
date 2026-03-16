@@ -20,9 +20,11 @@ pub fn discover_agents() -> Vec<AgentInfo> {
 }
 
 fn check_agent_availability(cmd: &str) -> (bool, Option<String>, Option<String>) {
-    match which::which(cmd) {
-        Ok(path) => {
-            let version = std::process::Command::new(cmd)
+    match crate::command::resolve_command_path(cmd) {
+        Some(path) => {
+            let mut version_command = std::process::Command::new(&path);
+            crate::command::apply_augmented_path_std_command(&mut version_command);
+            let version = version_command
                 .arg("--version")
                 .output()
                 .ok()
@@ -35,6 +37,6 @@ fn check_agent_availability(cmd: &str) -> (bool, Option<String>, Option<String>)
                 });
             (true, version, Some(path.to_string_lossy().to_string()))
         }
-        Err(_) => (false, None, None),
+        None => (false, None, None),
     }
 }

@@ -286,21 +286,6 @@ export function CommitFlowDialog({
     }
   }
 
-  const currentPreviewFiles = useMemo(() => {
-    if (!selectedFile) return []
-    return files.filter(
-      (file, index) => getFilePath(file, index) === selectedFile
-    )
-  }, [files, selectedFile])
-
-  const currentPreviewPatch = useMemo(() => {
-    if (!selectedFile) return ""
-    return buildPatch(
-      files.filter((file, index) => getFilePath(file, index) === selectedFile),
-      selections
-    )
-  }, [files, selectedFile, selections])
-
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm">
       <div className="flex h-[88vh] w-full max-w-7xl flex-col overflow-hidden rounded-[28px] border border-border bg-background shadow-[0_32px_100px_-48px_rgba(15,23,42,0.72)]">
@@ -458,15 +443,15 @@ export function CommitFlowDialog({
 
           <div className="min-h-0 overflow-hidden border-r border-border">
             <div className="border-b border-border px-4 py-3">
-              <div className="text-sm font-medium">改动预览</div>
+              <div className="text-sm font-medium">当前提交范围预览</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                当前预览的是选中的文件，右侧提交信息只会基于勾选的 patch 生成。
+                这里展示的是当前勾选范围内的全部变更。点击左侧文件会滚动定位，但不会缩小提交范围。
               </div>
             </div>
             <div className="h-[calc(88vh-73px)]">
               <DiffViewer
-                files={currentPreviewFiles}
-                rawPatch={currentPreviewPatch}
+                files={selectedFiles}
+                rawPatch={selectedPatch}
                 repoPath={repoPath}
                 selectedFile={selectedFile}
               />

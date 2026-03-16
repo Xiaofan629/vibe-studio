@@ -530,42 +530,47 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(249,115,22,0.14),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(59,130,246,0.12),_transparent_26%),linear-gradient(180deg,_rgba(15,23,42,0.02),_transparent_38%)] text-foreground">
-      <div className="mx-auto flex min-h-screen max-w-[1500px] flex-col px-5 py-5">
-        <header className="rounded-[24px] border border-border/70 bg-background/85 p-4 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.55)] backdrop-blur">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-2">
-              <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
-                <KanbanSquare className="h-3.5 w-3.5" />
+      <div className="mx-auto flex min-h-screen max-w-[2200px] flex-col px-4 py-4 sm:px-6 sm:py-5 lg:px-8 lg:py-6">
+        <header className="rounded-[20px] sm:rounded-[24px] border border-border/70 bg-background/85 p-3 sm:p-4 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.55)] backdrop-blur">
+          <div className="flex flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1.5 sm:space-y-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-2.5 sm:px-3 py-1 text-xs text-muted-foreground">
+                <KanbanSquare className="h-3 sm:h-3.5 w-3 sm:w-3.5" />
                 Workspace Board
               </div>
-              <h1 className="text-2xl font-semibold tracking-tight">
+              <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">
                 工作区看板
               </h1>
-              <p className="text-sm text-muted-foreground">{statusSummary}</p>
+              <p className="text-xs sm:text-sm text-muted-foreground">{statusSummary}</p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-orange-600"
+                className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm font-medium text-white transition-colors hover:bg-orange-600"
               >
-                <Plus className="h-4 w-4" />
-                New Workspace
+                <Plus className="h-3.5 sm:h-4 w-3.5 sm:w-4" />
+                <span className="hidden sm:inline">New Workspace</span>
+                <span className="sm:hidden">New</span>
               </button>
               <Link
                 href="/settings"
-                className="inline-flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="inline-flex items-center gap-2 rounded-xl border border-border px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                <Settings className="h-4 w-4" />
-                {t("settings.title")}
+                <Settings className="h-3.5 sm:h-4 w-3.5 sm:w-4" />
+                <span className="hidden sm:inline">{t("settings.title")}</span>
               </Link>
             </div>
           </div>
         </header>
 
-        <main className="mt-4 flex-1 overflow-hidden">
-          <div className="h-full overflow-x-auto pb-2">
-            <div className="grid min-h-full min-w-[900px] grid-cols-3 gap-4">
+        {/* 关键修复点 1：将 main 变成一个可以继续向下传递高度的 flex 列容器 */}
+        <main className="mt-3 sm:mt-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+          {/* 关键修复点 2：将滚动容器也变为 flex 列，这样内部网格就可以使用 flex-1 完全撑满屏幕 */}
+          <div className="flex-1 flex flex-col overflow-y-auto overflow-x-auto pb-2">
+            
+            {/* 关键修复点 3：添加 flex-1 shrink-0 强制填充父级，移除固定行高。这样列宽不仅会自适应，高度也会顶到底部 */}
+            <div className="flex-1 shrink-0 grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-[repeat(auto-fit,minmax(320px,1fr))] xl:grid-cols-[repeat(auto-fit,minmax(380px,1fr))] items-stretch">
               {BOARD_COLUMNS.map((column) => {
                 const meta = getStatusMeta(column.key)
                 const Icon = meta.icon
@@ -577,7 +582,7 @@ export default function HomePage() {
                     key={column.key}
                     data-board-lane={column.key}
                     className={[
-                      "flex min-h-[560px] flex-col rounded-[24px] border bg-background/80 p-3 shadow-[0_18px_60px_-48px_rgba(15,23,42,0.5)] backdrop-blur",
+                      "flex flex-col h-full min-h-[560px] rounded-[24px] border bg-background/80 p-3 shadow-[0_18px_60px_-48px_rgba(15,23,42,0.5)] backdrop-blur",
                       "border-border/70",
                       isActiveDropLane ? "ring-2 ring-primary/30" : "",
                     ].join(" ")}
@@ -598,7 +603,8 @@ export default function HomePage() {
                       </div>
                     </div>
 
-                    <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
+                    {/* 关键修复点 4：列表容器添加 min-h-0，防止卡片过多时撑破看板外框 */}
+                    <div className="mt-4 flex-1 min-h-0 space-y-3 overflow-y-auto pr-1">
                       {laneWorkspaces.length === 0 ? (
                         <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/20 p-6 text-center text-sm text-muted-foreground">
                           当前列还没有工作区

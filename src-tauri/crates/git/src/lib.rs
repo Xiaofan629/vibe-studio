@@ -1,6 +1,7 @@
 pub mod branch;
 pub mod cli;
 pub mod clone;
+pub mod command;
 pub mod diff;
 pub mod pr;
 pub mod worktree;

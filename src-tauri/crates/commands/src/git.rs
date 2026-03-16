@@ -551,6 +551,24 @@ pub async fn git_generate_commit_content_from_patch(
     patch: String,
 ) -> std::result::Result<GeneratedCommitContentResponse, String> {
     let path = std::path::Path::new(&repo_path);
+
+    // Verify that the repository path exists
+    if !path.exists() {
+        return Err(format!(
+            "Repository path does not exist: {}",
+            repo_path
+        ));
+    }
+
+    // Verify that it's a valid git repository
+    let git_dir = path.join(".git");
+    if !git_dir.exists() {
+        return Err(format!(
+            "Not a valid git repository (no .git directory): {}",
+            repo_path
+        ));
+    }
+
     let git = GitService::new();
     let agent_type = parse_agent_type(&agent_type)?;
     let current_branch = git

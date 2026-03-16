@@ -2,7 +2,6 @@ use crate::{cli::run_git, GitError, Result};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Serialize, Debug)]
 pub struct PrInfo {
@@ -56,6 +55,23 @@ impl crate::GitService {
         base_branch: &str,
         draft: bool,
     ) -> Result<PrInfo> {
+        // Verify that the repository path exists
+        if !repo_path.exists() {
+            return Err(GitError::CommandFailed(format!(
+                "Repository path does not exist: {}",
+                repo_path.display()
+            )));
+        }
+
+        // Verify that it's a valid git repository
+        let git_dir = repo_path.join(".git");
+        if !git_dir.exists() {
+            return Err(GitError::CommandFailed(format!(
+                "Not a valid git repository (no .git directory): {}",
+                repo_path.display()
+            )));
+        }
+
         let provider = detect_review_provider(repo_path)?;
         let current_branch = self.get_current_branch(repo_path)?.trim().to_string();
         ensure_pr_can_be_created(repo_path, &current_branch, base_branch)?;
@@ -388,16 +404,27 @@ fn detect_review_provider(repo_path: &Path) -> Result<ReviewProvider> {
     let remote_url = run_git(repo_path, &["remote", "get-url", "origin"])?;
     let normalized = remote_url.to_lowercase();
 
+    // Detect GitHub first (most common)
     if normalized.contains("github") {
-        Ok(ReviewProvider::GitHub)
-    } else if normalized.contains("gitlab") {
-        Ok(ReviewProvider::GitLab)
-    } else {
-        Err(GitError::CommandFailed(format!(
-            "Unsupported remote provider for PR/MR creation: {}",
-            remote_url
-        )))
+        return Ok(ReviewProvider::GitHub);
     }
+
+    // For GitLab and GitLab-compatible systems (self-hosted instances):
+    // Check if the URL follows common GitLab patterns or if glab CLI is available
+    let is_gitlab_style = normalized.contains("gitlab") ||
+                         // Common GitLab URL pattern: git@git.example.com:path/repo.git
+                         (normalized.starts_with("git@") && normalized.contains(":")) ||
+                         // HTTPS pattern: https://git.example.com/path/repo.git
+                         (normalized.starts_with("http") && normalized.contains("/"));
+
+    if is_gitlab_style {
+        return Ok(ReviewProvider::GitLab);
+    }
+
+    Err(GitError::CommandFailed(format!(
+        "Could not detect supported Git hosting provider from remote URL: {}. Currently supported: GitHub, GitLab (including self-hosted instances compatible with glab CLI)",
+        remote_url
+    )))
 }
 
 fn push_current_branch(repo_path: &Path, branch: &str) -> Result<()> {
@@ -435,10 +462,8 @@ fn count_commits_ahead(repo_path: &Path, base_branch: &str) -> Result<u32> {
 }
 
 fn run_cli_command(repo_path: &Path, program: &str, args: &[String]) -> Result<String> {
-    let output = Command::new(program)
-        .current_dir(repo_path)
-        .args(args)
-        .output()?;
+    let mut command = crate::command::new_command(program);
+    let output = command.current_dir(repo_path).args(args).output()?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
