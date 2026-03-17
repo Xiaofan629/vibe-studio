@@ -19,6 +19,20 @@ pub fn run_git(repo_path: &Path, args: &[&str]) -> Result<String> {
     }
 }
 
+pub fn run_git_raw(repo_path: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(args)
+        .output()?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(crate::GitError::CommandFailed(stderr))
+    }
+}
+
 pub fn run_git_with_input(repo_path: &Path, args: &[&str], input: &str) -> Result<String> {
     let mut child = Command::new("git")
         .current_dir(repo_path)
@@ -55,6 +69,25 @@ pub fn run_git_allow_exit_codes(
     let code = output.status.code().unwrap_or_default();
     if output.status.success() || allowed_exit_codes.contains(&code) {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(crate::GitError::CommandFailed(stderr))
+    }
+}
+
+pub fn run_git_raw_allow_exit_codes(
+    repo_path: &Path,
+    args: &[&str],
+    allowed_exit_codes: &[i32],
+) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(args)
+        .output()?;
+
+    let code = output.status.code().unwrap_or_default();
+    if output.status.success() || allowed_exit_codes.contains(&code) {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         Err(crate::GitError::CommandFailed(stderr))

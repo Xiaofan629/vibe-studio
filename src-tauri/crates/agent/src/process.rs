@@ -32,10 +32,16 @@ impl AgentProcessManager {
         working_dir: &Path,
         prompt: &str,
         continue_session: bool,
+        permission_mode: Option<String>,
         output_tx: mpsc::UnboundedSender<AgentLogEntry>,
     ) -> Result<()> {
         let adapter = adapters::create_adapter(agent_type);
-        let mut cmd = adapter.build_command(working_dir, prompt, continue_session);
+        let mut cmd = adapter.build_command(
+            working_dir,
+            prompt,
+            continue_session,
+            permission_mode.as_deref(),
+        );
 
         #[cfg(unix)]
         cmd.process_group(0);
@@ -69,11 +75,12 @@ impl AgentProcessManager {
         let stderr = child.stderr.take();
         if let Some(stderr) = stderr {
             let tx = output_tx.clone();
+            let agent_type_clone = agent_type;
             tokio::spawn(async move {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
+                    if !crate::parsers::should_ignore_stderr(agent_type_clone, &line) {
                         let _ = tx.send(AgentLogEntry {
                             entry_type: crate::AgentLogEntryType::Error,
                             content: line,

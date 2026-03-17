@@ -1,7 +1,7 @@
 "use client"
 
 import type { SessionStats } from "@/lib/types"
-import { Clock, Zap, Database } from "lucide-react"
+import { Clock, Zap, Database, Cpu } from "lucide-react"
 
 interface SessionStatsProps {
   stats: SessionStats | null
@@ -23,6 +23,14 @@ export function SessionStatsPanel({ stats }: SessionStatsProps) {
 
   return (
     <div className="flex items-center gap-4 px-4 py-2 border-b border-border bg-muted/30 text-xs">
+      {stats.model && (
+        <div className="flex items-center gap-1.5">
+          <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">Model:</span>
+          <span className="font-medium">{stats.model}</span>
+        </div>
+      )}
+
       {stats.totalTokens && (
         <div className="flex items-center gap-1.5">
           <Database className="h-3.5 w-3.5 text-muted-foreground" />

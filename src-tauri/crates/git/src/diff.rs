@@ -41,12 +41,12 @@ impl crate::GitService {
 
     pub fn get_full_diff(&self, repo_path: &Path, base: Option<&str>) -> Result<Vec<DiffFile>> {
         if base.is_some() {
-            let output = crate::cli::run_git(repo_path, &["diff", base.unwrap(), "-U3"])?;
+            let output = crate::cli::run_git_raw(repo_path, &["diff", base.unwrap(), "-U3"])?;
             return Ok(parse_unified_diff(&output));
         }
 
         let mut all_files = parse_unified_diff(
-            &crate::cli::run_git(repo_path, &["diff", "HEAD", "-U3"]).unwrap_or_default(),
+            &crate::cli::run_git_raw(repo_path, &["diff", "HEAD", "-U3"]).unwrap_or_default(),
         );
         all_files.extend(get_untracked_diffs(repo_path)?);
         Ok(all_files)
@@ -58,18 +58,19 @@ impl crate::GitService {
         from_revision: &str,
         to_revision: &str,
     ) -> Result<Vec<DiffFile>> {
-        let output = crate::cli::run_git(repo_path, &["diff", from_revision, to_revision, "-U3"])?;
+        let output =
+            crate::cli::run_git_raw(repo_path, &["diff", from_revision, to_revision, "-U3"])?;
         Ok(parse_unified_diff(&output))
     }
 
     /// Return the raw unified diff text (for @pierre/diffs frontend rendering)
     pub fn get_raw_diff(&self, repo_path: &Path, base: Option<&str>) -> Result<String> {
         if base.is_some() {
-            return crate::cli::run_git(repo_path, &["diff", base.unwrap(), "-U3"]);
+            return crate::cli::run_git_raw(repo_path, &["diff", base.unwrap(), "-U3"]);
         }
 
         let mut raw_diff =
-            crate::cli::run_git(repo_path, &["diff", "HEAD", "-U3"]).unwrap_or_default();
+            crate::cli::run_git_raw(repo_path, &["diff", "HEAD", "-U3"]).unwrap_or_default();
 
         for file_path in list_untracked_files(repo_path)? {
             let patch = build_untracked_file_patch(repo_path, &file_path)?;
@@ -94,7 +95,7 @@ impl crate::GitService {
         from_revision: &str,
         to_revision: &str,
     ) -> Result<String> {
-        crate::cli::run_git(repo_path, &["diff", from_revision, to_revision, "-U3"])
+        crate::cli::run_git_raw(repo_path, &["diff", from_revision, to_revision, "-U3"])
     }
 }
 
@@ -109,7 +110,7 @@ fn list_untracked_files(repo_path: &Path) -> Result<Vec<String>> {
 }
 
 fn build_untracked_file_patch(repo_path: &Path, file_path: &str) -> Result<String> {
-    crate::cli::run_git_allow_exit_codes(
+    crate::cli::run_git_raw_allow_exit_codes(
         repo_path,
         &["diff", "--no-index", "--", "/dev/null", file_path],
         &[1],

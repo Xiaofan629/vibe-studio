@@ -9,7 +9,13 @@ use tokio::process::Command;
 /// Trait for agent-specific CLI configuration
 pub trait AgentAdapter {
     /// Build the CLI command for this agent
-    fn build_command(&self, working_dir: &Path, prompt: &str, continue_session: bool) -> Command;
+    fn build_command(
+        &self,
+        working_dir: &Path,
+        prompt: &str,
+        continue_session: bool,
+        permission_mode: Option<&str>,
+    ) -> Command;
 
     /// Get environment variables to set for the process
     fn env_vars(&self) -> Vec<(&str, &str)> {

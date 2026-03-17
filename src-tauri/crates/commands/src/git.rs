@@ -255,18 +255,36 @@ pub async fn git_commit_selected(
         );
     }
 
-    vibe_studio_git::cli::run_git_with_input(
+    // 使用 --3way 来启用三路合并，即使有轻微不匹配也能成功
+    // 使用 --whitespace=fix 自动修复换行符问题
+    let apply_result = vibe_studio_git::cli::run_git_with_input(
         path,
         &[
             "apply",
             "--cached",
-            "--unidiff-zero",
-            "--whitespace=nowarn",
+            "--3way",
+            "--whitespace=fix",
             "-",
         ],
         &patch,
-    )
-    .map_err(|e| e.to_string())?;
+    );
+
+    // 如果 3way 失败，尝试使用更宽松的参数
+    if let Err(e) = apply_result {
+        vibe_studio_git::cli::run_git_with_input(
+            path,
+            &[
+                "apply",
+                "--cached",
+                "--recount",
+                "--inaccurate-eof",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            &patch,
+        )
+        .map_err(|e2| format!("{} (fallback also failed: {})", e, e2))?;
+    }
 
     let commit_result = vibe_studio_git::cli::run_git(path, &["commit", "-m", &message]);
 
@@ -554,10 +572,7 @@ pub async fn git_generate_commit_content_from_patch(
 
     // Verify that the repository path exists
     if !path.exists() {
-        return Err(format!(
-            "Repository path does not exist: {}",
-            repo_path
-        ));
+        return Err(format!("Repository path does not exist: {}", repo_path));
     }
 
     // Verify that it's a valid git repository
@@ -728,7 +743,7 @@ async fn run_agent_prompt(
     prompt: &str,
 ) -> std::result::Result<String, String> {
     let adapter = create_adapter(agent_type);
-    let mut command = adapter.build_command(working_dir, prompt, false);
+    let mut command = adapter.build_command(working_dir, prompt, false, None);
     for (key, value) in adapter.env_vars() {
         command.env(key, value);
     }
@@ -975,14 +990,14 @@ fn extract_json_candidate(text: &str) -> Option<String> {
         .strip_prefix("```json")
         .and_then(|value| value.strip_suffix("```"))
     {
-        return Some(stripped.trim().to_string());
+        return Some(clean_json_string(stripped.trim()));
     }
 
     if let Some(stripped) = trimmed
         .strip_prefix("```")
         .and_then(|value| value.strip_suffix("```"))
     {
-        return Some(stripped.trim().to_string());
+        return Some(clean_json_string(stripped.trim()));
     }
 
     let start = trimmed.find('{')?;
@@ -991,5 +1006,13 @@ fn extract_json_candidate(text: &str) -> Option<String> {
         return None;
     }
 
-    Some(trimmed[start..=end].to_string())
+    Some(clean_json_string(&trimmed[start..=end]))
+}
+
+// Remove raw control characters that some agents emit inside JSON-like output.
+// Escaped sequences such as "\\n" remain intact because they are ordinary chars.
+fn clean_json_string(json: &str) -> String {
+    json.chars()
+        .filter(|c| (*c as u32) > 0x1F)
+        .collect()
 }

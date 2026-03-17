@@ -355,10 +355,96 @@ impl crate::GitService {
                     comments,
                 })
             }
-            ReviewProvider::GitLab => Err(GitError::CommandFailed(
-                "Importing remote review comments is currently only implemented for GitHub."
-                    .to_string(),
-            )),
+            ReviewProvider::GitLab => {
+                let pr_info = self.get_pr_info(repo_path, branch)?.ok_or_else(|| {
+                    GitError::CommandFailed("No open MR found for the current branch.".to_string())
+                })?;
+                let mr_output = run_cli_command(
+                    repo_path,
+                    "glab",
+                    &[
+                        "api".to_string(),
+                        format!("projects/:fullpath/merge_requests/{}", pr_info.number),
+                    ],
+                )?;
+                let diffs_output = run_cli_command(
+                    repo_path,
+                    "glab",
+                    &[
+                        "api".to_string(),
+                        format!("projects/:fullpath/merge_requests/{}/changes", pr_info.number),
+                    ],
+                )?;
+                let discussions_output = run_cli_command(
+                    repo_path,
+                    "glab",
+                    &[
+                        "api".to_string(),
+                        "--paginate".to_string(),
+                        format!(
+                            "projects/:fullpath/merge_requests/{}/discussions?per_page=100",
+                            pr_info.number
+                        ),
+                    ],
+                )?;
+
+                let mr_json: Value = serde_json::from_str(&mr_output)?;
+                let diffs_json: Value = serde_json::from_str(&diffs_output)?;
+                let discussions_json: Value = serde_json::from_str(&discussions_output)?;
+
+                let files = diffs_json["changes"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|item| {
+                        let old_path = item["old_path"].as_str().unwrap_or("");
+                        let new_path = item["new_path"].as_str().unwrap_or("");
+                        let path = if new_path.is_empty() {
+                            old_path
+                        } else {
+                            new_path
+                        };
+                        if path.is_empty() {
+                            return None;
+                        }
+
+                        let patch = item["diff"].as_str().map(|value| value.to_string());
+                        let (additions, deletions) = count_patch_changes(patch.as_deref());
+
+                        Some(RemoteReviewFile {
+                            path: path.to_string(),
+                            status: gitlab_diff_status(&item).to_string(),
+                            additions,
+                            deletions,
+                            patch,
+                        })
+                    })
+                    .collect();
+
+                let comments = discussions_json
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .flat_map(|discussion| extract_gitlab_discussion_comments(&discussion))
+                    .collect();
+
+                Ok(RemoteReviewBundle {
+                    pr_number: pr_info.number,
+                    pr_url: pr_info.url,
+                    base_branch: mr_json["target_branch"]
+                        .as_str()
+                        .unwrap_or("main")
+                        .to_string(),
+                    head_branch: mr_json["source_branch"]
+                        .as_str()
+                        .unwrap_or("HEAD")
+                        .to_string(),
+                    files,
+                    comments,
+                })
+            }
         }
     }
 }
@@ -507,6 +593,121 @@ fn normalize_review_status(status: &str) -> String {
         "closed" => "closed".to_string(),
         other => other.to_string(),
     }
+}
+
+fn count_patch_changes(patch: Option<&str>) -> (i64, i64) {
+    let mut additions = 0;
+    let mut deletions = 0;
+
+    let Some(patch) = patch else {
+        return (0, 0);
+    };
+
+    for line in patch.lines() {
+        if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+            continue;
+        }
+
+        if line.starts_with('+') {
+            additions += 1;
+        } else if line.starts_with('-') {
+            deletions += 1;
+        }
+    }
+
+    (additions, deletions)
+}
+
+fn gitlab_diff_status(diff: &Value) -> &'static str {
+    if diff["new_file"].as_bool().unwrap_or(false) {
+        "added"
+    } else if diff["deleted_file"].as_bool().unwrap_or(false) {
+        "deleted"
+    } else if diff["renamed_file"].as_bool().unwrap_or(false) {
+        "renamed"
+    } else {
+        "modified"
+    }
+}
+
+fn extract_gitlab_discussion_comments(discussion: &Value) -> Vec<RemoteReviewComment> {
+    let notes = discussion["notes"].as_array().cloned().unwrap_or_default();
+    let fallback_position = notes.iter().find_map(extract_gitlab_note_position);
+
+    notes
+        .into_iter()
+        .filter_map(|note| {
+            if note["system"].as_bool().unwrap_or(false) {
+                return None;
+            }
+
+            let body = note["body"].as_str().unwrap_or("").trim().to_string();
+            if body.is_empty() {
+                return None;
+            }
+
+            let position =
+                extract_gitlab_note_position(&note).or_else(|| fallback_position.clone());
+            let path = extract_gitlab_position_path(position.as_ref())?;
+            let (line, side) = extract_gitlab_position_line(position.as_ref());
+
+            Some(RemoteReviewComment {
+                id: note["id"]
+                    .as_i64()
+                    .or_else(|| note["noteable_iid"].as_i64())
+                    .unwrap_or_default()
+                    .to_string(),
+                path,
+                line,
+                side,
+                body,
+                diff_hunk: None,
+                author: note["author"]["username"]
+                    .as_str()
+                    .or_else(|| note["author"]["name"].as_str())
+                    .map(|value| value.to_string()),
+                created_at: note["created_at"].as_str().map(|value| value.to_string()),
+            })
+        })
+        .collect()
+}
+
+fn extract_gitlab_note_position(note: &Value) -> Option<Value> {
+    note.get("position").cloned()
+}
+
+fn extract_gitlab_position_path(position: Option<&Value>) -> Option<String> {
+    let position = position?;
+    position["new_path"]
+        .as_str()
+        .or_else(|| position["old_path"].as_str())
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn extract_gitlab_position_line(position: Option<&Value>) -> (Option<i64>, Option<String>) {
+    let Some(position) = position else {
+        return (None, None);
+    };
+
+    if let Some(line) = position["new_line"].as_i64() {
+        return (Some(line), Some("RIGHT".to_string()));
+    }
+
+    if let Some(line) = position["old_line"].as_i64() {
+        return (Some(line), Some("LEFT".to_string()));
+    }
+
+    let start = &position["line_range"]["start"];
+    if let Some(line) = start["new_line"].as_i64() {
+        return (Some(line), Some("RIGHT".to_string()));
+    }
+
+    if let Some(line) = start["old_line"].as_i64() {
+        return (Some(line), Some("LEFT".to_string()));
+    }
+
+    (None, None)
 }
 
 fn extract_github_repo_slug(repo_path: &Path) -> Result<String> {

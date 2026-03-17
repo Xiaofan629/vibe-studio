@@ -5,7 +5,7 @@ import { invoke } from "@/lib/tauri"
 import { useCommit } from "@/hooks/useCommit"
 import { DiffViewer } from "@/components/diff/DiffViewer"
 import { DiffStats } from "@/components/diff/DiffStats"
-import type { AgentType, DiffFile } from "@/lib/types"
+import type { AgentType, DiffFile, PrInfo } from "@/lib/types"
 import {
   AlertCircle,
   CheckSquare,
@@ -17,6 +17,8 @@ import {
   Sparkles,
   Square,
   X,
+  Upload,
+  Copy,
 } from "lucide-react"
 
 interface CommitFlowDialogProps {
@@ -32,6 +34,13 @@ interface CommitFlowDialogProps {
 type FileSelection = {
   checked: boolean
   hunkChecks: boolean[]
+}
+
+type RawPatchFile = {
+  oldPath: string | null
+  newPath: string | null
+  headerLines: string[]
+  hunkBlocks: string[][]
 }
 
 function getFilePath(file: DiffFile, index: number) {
@@ -53,11 +62,167 @@ function linePrefix(kind: DiffFile["hunks"][number]["lines"][number]["kind"]) {
   }
 }
 
+function splitGitHeaderTokens(input: string) {
+  const tokens: string[] = []
+  let current = ""
+  let inQuotes = false
+  let escaping = false
+
+  for (const char of input) {
+    if (escaping) {
+      current += char
+      escaping = false
+      continue
+    }
+
+    if (char === "\\" && inQuotes) {
+      escaping = true
+      continue
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes
+      continue
+    }
+
+    if (char === " " && !inQuotes) {
+      if (current) {
+        tokens.push(current)
+        current = ""
+      }
+      continue
+    }
+
+    current += char
+  }
+
+  if (current) {
+    tokens.push(current)
+  }
+
+  return tokens
+}
+
+function unquoteGitPath(path: string) {
+  const trimmed = path.trim()
+  if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
+    return trimmed
+      .slice(1, -1)
+      .replace(/\\\\/g, "\\")
+      .replace(/\\"/g, '"')
+  }
+  return trimmed
+}
+
+function stripDiffPrefix(path: string, prefix: "a" | "b") {
+  const normalized = unquoteGitPath(path)
+  const expected = `${prefix}/`
+  return normalized.startsWith(expected)
+    ? normalized.slice(expected.length)
+    : normalized
+}
+
+function parsePatchPathLine(line: string, prefix: "--- " | "+++ ") {
+  const path = line.slice(prefix.length).trim()
+  if (path === "/dev/null") {
+    return null
+  }
+
+  const normalized = unquoteGitPath(path)
+  if (normalized.startsWith("a/") || normalized.startsWith("b/")) {
+    return normalized.slice(2)
+  }
+  return normalized
+}
+
+function parseDiffHeaderPaths(line: string) {
+  const stripped = line.replace(/^diff --git\s+/, "")
+  const tokens = splitGitHeaderTokens(stripped)
+  return {
+    oldPath: tokens[0] ? stripDiffPrefix(tokens[0], "a") : null,
+    newPath: tokens[1] ? stripDiffPrefix(tokens[1], "b") : null,
+  }
+}
+
+function parseRawPatchFiles(rawPatch: string): RawPatchFile[] {
+  if (!rawPatch.trim()) {
+    return []
+  }
+
+  const lines = rawPatch.split("\n")
+  if (lines[lines.length - 1] === "") {
+    lines.pop()
+  }
+
+  const files: RawPatchFile[] = []
+  let currentFile: RawPatchFile | null = null
+  let currentHunk: string[] | null = null
+
+  const flushHunk = () => {
+    if (currentFile && currentHunk) {
+      currentFile.hunkBlocks.push(currentHunk)
+      currentHunk = null
+    }
+  }
+
+  const flushFile = () => {
+    if (!currentFile) return
+    flushHunk()
+    files.push(currentFile)
+    currentFile = null
+  }
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flushFile()
+      const { oldPath, newPath } = parseDiffHeaderPaths(line)
+      currentFile = {
+        oldPath,
+        newPath,
+        headerLines: [line],
+        hunkBlocks: [],
+      }
+      continue
+    }
+
+    if (!currentFile) {
+      continue
+    }
+
+    if (line.startsWith("@@")) {
+      flushHunk()
+      currentHunk = [line]
+      continue
+    }
+
+    if (currentHunk) {
+      currentHunk.push(line)
+      continue
+    }
+
+    currentFile.headerLines.push(line)
+
+    if (line.startsWith("--- ")) {
+      currentFile.oldPath = parsePatchPathLine(line, "--- ")
+    } else if (line.startsWith("+++ ")) {
+      currentFile.newPath = parsePatchPathLine(line, "+++ ")
+    } else if (line.startsWith("rename from ")) {
+      currentFile.oldPath = unquoteGitPath(line.slice("rename from ".length))
+    } else if (line.startsWith("rename to ")) {
+      currentFile.newPath = unquoteGitPath(line.slice("rename to ".length))
+    }
+  }
+
+  flushFile()
+  return files
+}
+
 function buildPatch(
   files: DiffFile[],
-  selections: Record<string, FileSelection>
+  selections: Record<string, FileSelection>,
+  rawPatchFiles: RawPatchFile[]
 ) {
-  const chunks: string[] = []
+  const fileChunks: string[] = []
 
   files.forEach((file, fileIndex) => {
     const filePath = getFilePath(file, fileIndex)
@@ -69,6 +234,26 @@ function buildPatch(
     )
     if (selectedHunks.length === 0) return
 
+    const rawPatchFile = rawPatchFiles[fileIndex]
+    if (
+      rawPatchFile &&
+      (rawPatchFile.newPath ?? rawPatchFile.oldPath) === filePath &&
+      rawPatchFile.hunkBlocks.length >= file.hunks.length
+    ) {
+      const chunks: string[] = []
+      chunks.push(...rawPatchFile.headerLines)
+      rawPatchFile.hunkBlocks.forEach((hunkLines, hunkIndex) => {
+        if (selection.hunkChecks[hunkIndex]) {
+          // 保留原始的 hunk 内容，包括空行和元数据
+          chunks.push(...hunkLines)
+        }
+      })
+      // 保持原始换行符格式
+      fileChunks.push(chunks.join("\n"))
+      return
+    }
+
+    const chunks: string[] = []
     chunks.push(
       `diff --git ${patchPath(file.oldPath ?? file.newPath, "a")} ${patchPath(file.newPath ?? file.oldPath, "b")}`
     )
@@ -89,9 +274,12 @@ function buildPatch(
         chunks.push(`${linePrefix(line.kind)}${line.content}`)
       })
     })
+    fileChunks.push(chunks.join("\n"))
   })
 
-  return chunks.length > 0 ? `${chunks.join("\n")}\n` : ""
+  // 确保文件之间有正确的分隔，整个 patch 以换行符结尾
+  const patch = fileChunks.join("\n")
+  return patch.endsWith("\n") ? patch : patch + "\n"
 }
 
 export function CommitFlowDialog({
@@ -111,6 +299,7 @@ export function CommitFlowDialog({
     loading,
     generateCommitMessageFromPatch,
     commitSelected,
+    commitSelectedAndPush,
   } = useCommit(repoPath, {
     agentType,
     workspaceTitle,
@@ -127,12 +316,33 @@ export function CommitFlowDialog({
   )
   const [loadingDiff, setLoadingDiff] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [prInfo, setPrInfo] = useState<PrInfo | null | undefined>(undefined)
+  const [rawPatch, setRawPatch] = useState("")
+
+  // 加载 PR 信息
+  useEffect(() => {
+    const loadPrInfo = async () => {
+      try {
+        const info = await invoke<PrInfo | null>("git_get_pr_info", {
+          repoPath,
+        })
+        setPrInfo(info)
+      } catch {
+        setPrInfo(null)
+      }
+    }
+    loadPrInfo()
+  }, [repoPath])
 
   useEffect(() => {
     setLoadingDiff(true)
     setError(null)
-    invoke<any[]>("git_diff_full", { repoPath, baseBranch: null })
-      .then((rawDiffFiles) => {
+    Promise.all([
+      invoke<any[]>("git_diff_full", { repoPath, baseBranch: null }),
+      invoke<string>("git_diff_raw_patch", { repoPath, baseBranch: null }),
+    ])
+      .then(([rawDiffFiles, rawPatchText]) => {
         const normalizedFiles: DiffFile[] = rawDiffFiles.map((f) => ({
           oldPath: f.old_path ?? f.oldPath ?? null,
           newPath: f.new_path ?? f.newPath ?? null,
@@ -156,6 +366,7 @@ export function CommitFlowDialog({
           contentOmitted: f.content_omitted ?? f.contentOmitted ?? false,
         }))
 
+        setRawPatch(rawPatchText)
         setFiles(normalizedFiles)
         setSelectedFile(
           normalizedFiles[0] ? getFilePath(normalizedFiles[0], 0) : null
@@ -188,9 +399,11 @@ export function CommitFlowDialog({
       .finally(() => setLoadingDiff(false))
   }, [repoPath])
 
+  const rawPatchFiles = useMemo(() => parseRawPatchFiles(rawPatch), [rawPatch])
+
   const selectedPatch = useMemo(
-    () => buildPatch(files, selections),
-    [files, selections]
+    () => buildPatch(files, selections, rawPatchFiles),
+    [files, selections, rawPatchFiles]
   )
 
   const selectedFiles = useMemo(() => {
@@ -281,6 +494,25 @@ export function CommitFlowDialog({
       if (requestPr) {
         onRequestCreatePr?.()
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleCommitAndPush = async () => {
+    if (!selectedPatch.trim()) {
+      setError("还没有选择任何提交内容，请先勾选文件或代码块。")
+      return
+    }
+
+    try {
+      setError(null)
+      const message = commitBody.trim()
+        ? `${commitTitle.trim()}\n\n${commitBody.trim()}`
+        : commitTitle.trim()
+      await commitSelectedAndPush(message, selectedPatch)
+      onCommitted?.()
+      onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -502,9 +734,24 @@ export function CommitFlowDialog({
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-300">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                  {error}
+                <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-300">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div className="min-w-0 flex-1 line-clamp-2">
+                      {error}
+                    </div>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(error)
+                        setCopied(true)
+                        setTimeout(() => setCopied(false), 2000)
+                      }}
+                      className="shrink-0 rounded px-2 py-1 text-xs opacity-70 hover:opacity-100"
+                      title="复制错误信息"
+                    >
+                      {copied ? "已复制" : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -523,16 +770,34 @@ export function CommitFlowDialog({
                   )}
                   提交
                 </button>
-                <button
-                  onClick={() => void handleCommit(true)}
-                  disabled={
-                    loading || !commitTitle.trim() || !selectedPatch.trim()
-                  }
-                  className="flex items-center gap-2 rounded-md border border-input px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
-                >
-                  <Send className="h-3.5 w-3.5" />
-                  提交并创建 PR
-                </button>
+                {prInfo && (
+                  <button
+                    onClick={() => void handleCommitAndPush()}
+                    disabled={
+                      loading || !commitTitle.trim() || !selectedPatch.trim()
+                    }
+                    className="flex items-center gap-2 rounded-md border border-input px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    {loading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="h-3.5 w-3.5" />
+                    )}
+                    提交并推送
+                  </button>
+                )}
+                {prInfo === null && (
+                  <button
+                    onClick={() => void handleCommit(true)}
+                    disabled={
+                      loading || !commitTitle.trim() || !selectedPatch.trim()
+                    }
+                    className="flex items-center gap-2 rounded-md border border-input px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    提交并创建 PR
+                  </button>
+                )}
               </div>
             </div>
           </div>

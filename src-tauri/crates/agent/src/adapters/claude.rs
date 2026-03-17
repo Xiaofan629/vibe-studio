@@ -1,4 +1,5 @@
 use super::AgentAdapter;
+use crate::command;
 use std::path::Path;
 use tokio::process::Command;
 
@@ -11,13 +12,30 @@ use tokio::process::Command;
 pub struct ClaudeCodeAdapter;
 
 impl AgentAdapter for ClaudeCodeAdapter {
-    fn build_command(&self, working_dir: &Path, prompt: &str, continue_session: bool) -> Command {
-        let mut cmd = Command::new("claude");
+    fn build_command(
+        &self,
+        working_dir: &Path,
+        prompt: &str,
+        continue_session: bool,
+        permission_mode: Option<&str>,
+    ) -> Command {
+        let mut cmd = command::new_tokio_command("claude");
         cmd.current_dir(working_dir);
 
-        let mut args = vec!["-p", prompt, "--output-format", "stream-json", "--verbose"];
+        let mut args = vec![
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
+        ];
         if continue_session {
             args.push("--continue");
+        }
+        if let Some(mode) = permission_mode.filter(|mode| !mode.is_empty()) {
+            args.push("--permission-mode");
+            args.push(mode);
         }
         cmd.args(&args);
 

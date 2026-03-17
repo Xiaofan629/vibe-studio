@@ -352,3 +352,77 @@ pub async fn load_claude_session_full(
 
     vibe_studio_agent::parsers::claude_full::read_claude_session_full(&path_to_use)
 }
+
+#[tauri::command]
+pub async fn load_codex_session_full(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> std::result::Result<vibe_studio_agent::ConversationDetail, String> {
+    // 从数据库获取 workspace 信息
+    let workspace = vibe_studio_db::entities::workspace::Entity::find_by_id(&workspace_id)
+        .one(&state.db.conn)
+        .await
+        .map_err(|e| {
+            eprintln!("[ERROR] Database query failed: {}", e);
+            e.to_string()
+        })?
+        .ok_or_else(|| {
+            eprintln!("[ERROR] Workspace not found: {}", workspace_id);
+            "Workspace not found".to_string()
+        })?;
+
+    // 使用 worktree 路径（如果存在），否则使用原始项目路径
+    let path_to_use = if let Some(ref worktree_path) = workspace.worktree_path {
+        let path = std::path::Path::new(worktree_path);
+        path.parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| worktree_path.clone())
+    } else {
+        let project = vibe_studio_db::entities::project::Entity::find_by_id(&workspace.project_id)
+            .one(&state.db.conn)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Project not found".to_string())?;
+        project.path
+    };
+
+    vibe_studio_agent::parsers::codex_full::read_codex_session_full(std::path::Path::new(
+        &path_to_use,
+    ))
+}
+
+#[tauri::command]
+pub async fn load_gemini_session_full(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> std::result::Result<vibe_studio_agent::ConversationDetail, String> {
+    let workspace = vibe_studio_db::entities::workspace::Entity::find_by_id(&workspace_id)
+        .one(&state.db.conn)
+        .await
+        .map_err(|e| {
+            eprintln!("[ERROR] Database query failed: {}", e);
+            e.to_string()
+        })?
+        .ok_or_else(|| {
+            eprintln!("[ERROR] Workspace not found: {}", workspace_id);
+            "Workspace not found".to_string()
+        })?;
+
+    let path_to_use = if let Some(ref worktree_path) = workspace.worktree_path {
+        let path = std::path::Path::new(worktree_path);
+        path.parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| worktree_path.clone())
+    } else {
+        let project = vibe_studio_db::entities::project::Entity::find_by_id(&workspace.project_id)
+            .one(&state.db.conn)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Project not found".to_string())?;
+        project.path
+    };
+
+    vibe_studio_agent::parsers::gemini_full::read_gemini_session_full(std::path::Path::new(
+        &path_to_use,
+    ))
+}

@@ -18,26 +18,47 @@ import {
   Loader2,
   Play,
   Plus,
+  PencilLine,
   Search,
   Settings,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react"
-import { invoke, workspacesApi } from "@/lib/tauri"
+import {
+  invoke,
+  onWorkspaceStatusChanged,
+  workspacesApi,
+} from "@/lib/tauri"
 import { FileBrowser } from "@/components/workspace/FileBrowser"
 import type {
   AgentType,
+  GitBranch as RepoBranch,
   Project,
   Workspace,
   WorkspaceStatus,
 } from "@/lib/types"
 
+interface BranchOption {
+  value: string
+  label: string
+  isRemote: boolean
+  useLocalProject?: boolean
+}
+
+type RawRepoBranch = RepoBranch & {
+  is_remote?: boolean
+  is_current?: boolean
+  last_commit_sha?: string | null
+  last_commit_message?: string | null
+}
+
 interface SelectedRepo {
   path: string
   name: string
   branch: string
-  branches: string[]
+  branches: BranchOption[]
+  useLocalProject: boolean
   loadingBranches: boolean
 }
 
@@ -61,6 +82,8 @@ const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
   { value: "codex", label: "Codex" },
   { value: "gemini", label: "Gemini CLI" },
 ]
+
+const WORKSPACE_AGENT_KEY_PREFIX = "vibe-studio:workspace-agent:"
 
 const BOARD_COLUMNS: {
   key: BoardColumnKey
@@ -112,6 +135,100 @@ function getStatusMeta(status: BoardColumnKey) {
   }
 }
 
+function getAgentLabel(agentType: AgentType) {
+  return (
+    AGENT_OPTIONS.find((option) => option.value === agentType)?.label ?? agentType
+  )
+}
+
+function readStoredWorkspaceAgent(workspaceId: string): AgentType | null {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const value = window.localStorage.getItem(
+    `${WORKSPACE_AGENT_KEY_PREFIX}${workspaceId}`
+  )
+
+  if (
+    value === "claude_code" ||
+    value === "codex" ||
+    value === "gemini"
+  ) {
+    return value
+  }
+
+  return null
+}
+
+function applyStoredWorkspaceAgents(workspaces: Workspace[]): Workspace[] {
+  return workspaces.map((workspace) => ({
+    ...workspace,
+    agent_type: readStoredWorkspaceAgent(workspace.id) ?? workspace.agent_type,
+  }))
+}
+
+function buildBranchOptions(branches: RepoBranch[]): BranchOption[] {
+  const options: BranchOption[] = []
+  const seen = new Set<string>()
+  const currentLocalBranch =
+    branches.find((branch) => !branch.isRemote && branch.isCurrent) ?? null
+
+  const pushOption = (
+    value: string,
+    label: string,
+    isRemote: boolean,
+    useLocalProject = false
+  ) => {
+    if (!value || seen.has(value)) {
+      return
+    }
+
+    seen.add(value)
+    options.push({ value, label, isRemote, useLocalProject })
+  }
+
+  if (currentLocalBranch) {
+    pushOption(
+      currentLocalBranch.name,
+      `本地项目（${currentLocalBranch.name}）`,
+      false,
+      true
+    )
+  }
+
+  for (const branch of branches) {
+    if (currentLocalBranch && branch.name === currentLocalBranch.name) {
+      continue
+    }
+
+    pushOption(branch.name, branch.name, branch.isRemote)
+  }
+
+  return options
+}
+
+function normalizeBranch(branch: RawRepoBranch): RepoBranch {
+  return {
+    name: branch.name,
+    isRemote: branch.isRemote ?? branch.is_remote ?? false,
+    isCurrent: branch.isCurrent ?? branch.is_current ?? false,
+    lastCommitSha: branch.lastCommitSha ?? branch.last_commit_sha ?? null,
+    lastCommitMessage:
+      branch.lastCommitMessage ?? branch.last_commit_message ?? null,
+  }
+}
+
+function getDefaultBranch(options: BranchOption[]): string {
+  return (
+    options.find((branch) => branch.value === "origin/main")?.value ??
+    options.find((branch) => branch.value === "origin/master")?.value ??
+    options.find((branch) => branch.isRemote)?.value ??
+    options[0]?.value ??
+    "main"
+  )
+}
+
 export default function HomePage() {
   const t = useTranslations()
   const router = useRouter()
@@ -141,22 +258,54 @@ export default function HomePage() {
     useState<Workspace | null>(null)
   const pointerDragRef = useRef<PointerDragState | null>(null)
 
+  const refreshWorkspaceBoard = useCallback(() => {
+    workspacesApi
+      .list()
+      .then((items) => setWorkspaces(applyStoredWorkspaceAgents(items)))
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     invoke<Project[]>("list_projects")
       .then(setRecentProjects)
       .catch(() => {})
 
-    workspacesApi
-      .list()
-      .then(setWorkspaces)
-      .catch(() => {})
-  }, [])
+    refreshWorkspaceBoard()
+  }, [refreshWorkspaceBoard])
 
-  const loadBranches = useCallback(async (path: string): Promise<string[]> => {
+  useEffect(() => {
+    const unsubscribe = onWorkspaceStatusChanged(() => {
+      refreshWorkspaceBoard()
+    })
+
+    const handleFocus = () => {
+      refreshWorkspaceBoard()
+    }
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        refreshWorkspaceBoard()
+      }
+    }
+
+    window.addEventListener("focus", handleFocus)
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      unsubscribe()
+      window.removeEventListener("focus", handleFocus)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [refreshWorkspaceBoard])
+
+  const loadBranches = useCallback(async (path: string): Promise<BranchOption[]> => {
     try {
-      return await invoke<string[]>("get_repo_branches", { repoPath: path })
+      const branches = await invoke<RawRepoBranch[]>("git_branches", {
+        repoPath: path,
+      })
+      return buildBranchOptions(branches.map(normalizeBranch))
     } catch {
-      return ["main"]
+      return [{ value: "main", label: "main", isRemote: false }]
     }
   }, [])
 
@@ -172,18 +321,16 @@ export default function HomePage() {
         name,
         branch: "",
         branches: [],
+        useLocalProject: false,
         loadingBranches: true,
       }
 
       setSelectedRepos((prev) => [...prev, nextRepo])
 
       const branches = await loadBranches(path)
-      const defaultBranch =
-        branches.find((branch) => branch === "origin/main") ??
-        branches.find((branch) => branch === "origin/master") ??
-        branches.find((branch) => !branch.startsWith("origin/")) ??
-        branches[0] ??
-        "main"
+      const defaultBranch = getDefaultBranch(branches)
+      const defaultOption =
+        branches.find((branch) => branch.value === defaultBranch) ?? null
 
       setSelectedRepos((prev) =>
         prev.map((repo) =>
@@ -192,6 +339,7 @@ export default function HomePage() {
                 ...repo,
                 branches,
                 branch: defaultBranch,
+                useLocalProject: defaultOption?.useLocalProject ?? false,
                 loadingBranches: false,
               }
             : repo
@@ -205,9 +353,17 @@ export default function HomePage() {
     setSelectedRepos((prev) => prev.filter((repo) => repo.path !== path))
   }, [])
 
-  const updateBranch = useCallback((path: string, branch: string) => {
+  const updateBranch = useCallback((path: string, branch: BranchOption) => {
     setSelectedRepos((prev) =>
-      prev.map((repo) => (repo.path === path ? { ...repo, branch } : repo))
+      prev.map((repo) =>
+        repo.path === path
+          ? {
+              ...repo,
+              branch: branch.value,
+              useLocalProject: branch.useLocalProject ?? false,
+            }
+          : repo
+      )
     )
   }, [])
 
@@ -261,6 +417,7 @@ export default function HomePage() {
         repos: selectedRepos.map((repo) => ({
           path: repo.path,
           branch: repo.branch,
+          use_local_project: repo.useLocalProject || undefined,
         })),
         agent_type: selectedAgent,
         initial_prompt: promptText.trim() || undefined,
@@ -319,6 +476,24 @@ export default function HomePage() {
         console.error("Failed to delete workspace:", err)
         setWorkspaces(previous)
         return false
+      }
+    },
+    [workspaces]
+  )
+
+  const handleRenameWorkspace = useCallback(
+    async (workspaceId: string, title: string | null) => {
+      const previous = workspaces
+      const next = workspaces.map((workspace) =>
+        workspace.id === workspaceId ? { ...workspace, title } : workspace
+      )
+      setWorkspaces(next)
+
+      try {
+        await workspacesApi.updateTitle(workspaceId, title)
+      } catch (err) {
+        console.error("Failed to update workspace title:", err)
+        setWorkspaces(previous)
       }
     },
     [workspaces]
@@ -616,6 +791,7 @@ export default function HomePage() {
                             workspace={workspace}
                             isDragging={draggingWorkspaceId === workspace.id}
                             onDelete={handleRequestDeleteWorkspace}
+                            onRename={handleRenameWorkspace}
                             onPointerDown={handleWorkspacePointerDown}
                           />
                         ))
@@ -1043,16 +1219,52 @@ function WorkspaceCard({
   workspace,
   isDragging,
   onDelete,
+  onRename,
   onPointerDown,
 }: {
   workspace: Workspace
   isDragging: boolean
   onDelete: (workspace: Workspace) => void
+  onRename: (workspaceId: string, title: string | null) => void | Promise<void>
   onPointerDown: (
     event: React.MouseEvent<HTMLDivElement>,
     workspace: Workspace
   ) => void
 }) {
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [draftTitle, setDraftTitle] = useState(workspace.title ?? "")
+  const [savingTitle, setSavingTitle] = useState(false)
+
+  useEffect(() => {
+    if (!isEditingTitle) {
+      setDraftTitle(workspace.title ?? "")
+    }
+  }, [isEditingTitle, workspace.title])
+
+  const fallbackTitle =
+    workspace.initial_prompt?.slice(0, 80) ?? "未命名工作区"
+  const displayedTitle = workspace.title ?? fallbackTitle
+
+  const submitTitle = async () => {
+    const normalizedTitle = draftTitle.trim()
+    const nextTitle = normalizedTitle.length > 0 ? normalizedTitle : null
+    const previousTitle = workspace.title ?? null
+
+    setIsEditingTitle(false)
+    setDraftTitle(nextTitle ?? "")
+
+    if (nextTitle === previousTitle) {
+      return
+    }
+
+    setSavingTitle(true)
+    try {
+      await onRename(workspace.id, nextTitle)
+    } finally {
+      setSavingTitle(false)
+    }
+  }
+
   return (
     <div
       onMouseDown={(event) => onPointerDown(event, workspace)}
@@ -1067,17 +1279,71 @@ function WorkspaceCard({
         </div>
 
         <div className="min-w-0 flex-1 text-left">
-          <p className="truncate text-sm font-semibold">
-            {workspace.title ??
-              workspace.initial_prompt?.slice(0, 80) ??
-              "未命名工作区"}
-          </p>
+          {isEditingTitle ? (
+            <input
+              value={draftTitle}
+              autoFocus
+              placeholder={fallbackTitle}
+              onMouseDown={(event) => {
+                event.stopPropagation()
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+              }}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              onBlur={() => {
+                void submitTitle()
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault()
+                  void submitTitle()
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault()
+                  setIsEditingTitle(false)
+                  setDraftTitle(workspace.title ?? "")
+                }
+              }}
+              className="w-full rounded-lg border border-input bg-background px-2 py-1 text-sm font-semibold outline-none ring-0"
+            />
+          ) : (
+            <div className="flex items-start gap-2">
+              <p className="min-w-0 flex-1 truncate text-sm font-semibold">
+                {displayedTitle}
+              </p>
+              <button
+                data-edit-title-button="true"
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                }}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setDraftTitle(workspace.title ?? "")
+                  setIsEditingTitle(true)
+                }}
+                draggable={false}
+                className="rounded-lg border border-transparent p-1.5 text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
+                title="修改工作区名称"
+              >
+                <PencilLine className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           <p className="mt-1 truncate text-xs text-muted-foreground">
             {workspace.repos.map((repo) => repo.name).join(", ")}
           </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            更新于 {formatRelativeTime(workspace.updated_at)}
-          </p>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              {savingTitle ? "保存中..." : `更新于 ${formatRelativeTime(workspace.updated_at)}`}
+            </p>
+            <div className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+              <Bot className="h-3 w-3" />
+              <span>{getAgentLabel(workspace.agent_type)}</span>
+            </div>
+          </div>
         </div>
 
         <button
@@ -1152,10 +1418,10 @@ function BranchDropdown({
   loading,
   onChange,
 }: {
-  branches: string[]
+  branches: BranchOption[]
   currentBranch: string
   loading: boolean
-  onChange: (branch: string) => void
+  onChange: (branch: BranchOption) => void
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
@@ -1176,9 +1442,14 @@ function BranchDropdown({
     return () => document.removeEventListener("mousedown", handler)
   }, [open])
 
+  const selectedBranch =
+    branches.find((branch) => branch.value === currentBranch) ?? null
+
   const filteredBranches = search
-    ? branches.filter((branch) =>
-        branch.toLowerCase().includes(search.toLowerCase())
+    ? branches.filter(
+        (branch) =>
+          branch.label.toLowerCase().includes(search.toLowerCase()) ||
+          branch.value.toLowerCase().includes(search.toLowerCase())
       )
     : branches
 
@@ -1191,7 +1462,9 @@ function BranchDropdown({
       >
         <span className="flex min-w-0 items-center gap-2">
           <GitBranch className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{loading ? "..." : currentBranch}</span>
+          <span className="truncate">
+            {loading ? "..." : selectedBranch?.label ?? currentBranch}
+          </span>
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0" />
       </button>
@@ -1210,18 +1483,18 @@ function BranchDropdown({
           <div className="max-h-56 overflow-y-auto">
             {filteredBranches.map((branch) => (
               <button
-                key={branch}
+                key={branch.value}
                 onClick={() => {
                   onChange(branch)
                   setOpen(false)
                   setSearch("")
                 }}
                 className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs hover:bg-accent ${
-                  branch === currentBranch ? "bg-accent/60" : ""
+                  branch.value === currentBranch ? "bg-accent/60" : ""
                 }`}
               >
                 <GitBranch className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">{branch}</span>
+                <span className="truncate">{branch.label}</span>
               </button>
             ))}
 

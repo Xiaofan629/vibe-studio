@@ -138,6 +138,25 @@ export function useCommit(repoPath: string | null, options: UseCommitOptions = {
     }
   }, [repoPath])
 
+  const commitSelectedAndPush = useCallback(
+    async (message: string, patch: string) => {
+      if (!repoPath) throw new Error("No repo path")
+      setLoading(true)
+      try {
+        const result = await invoke<{ sha: string; branch: string; message: string }>(
+          "git_commit_selected",
+          { repoPath, message, patch }
+        )
+        // Commit 成功后 push
+        await invoke("git_push", { repoPath })
+        return result
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoPath]
+  )
+
   return {
     commitTitle,
     setCommitTitle,
@@ -149,5 +168,6 @@ export function useCommit(repoPath: string | null, options: UseCommitOptions = {
     commit,
     commitSelected,
     push,
+    commitSelectedAndPush,
   }
 }

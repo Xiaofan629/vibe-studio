@@ -1,6 +1,24 @@
 use crate::{AgentLogEntry, AgentLogEntryType};
 use serde_json::Value;
 
+fn is_ignorable_gemini_text_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || trimmed == "undefined"
+        || trimmed == "null"
+        || trimmed == "YOLO mode is enabled. All tool calls will be automatically approved."
+        || trimmed == "Server 'mcpServers' supports tool updates. Listening for changes..."
+        || trimmed.contains("Failed to connect to IDE companion extension")
+}
+
+pub fn should_ignore_stderr_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || trimmed == "YOLO mode is enabled. All tool calls will be automatically approved."
+        || trimmed == "Server 'mcpServers' supports tool updates. Listening for changes..."
+        || trimmed.contains("Failed to connect to IDE companion extension")
+}
+
 /// Parse Gemini CLI output line.
 ///
 /// Gemini CLI can output:
@@ -9,7 +27,7 @@ use serde_json::Value;
 /// - Lines prefixed with special markers for file operations
 pub fn parse_line(line: &str) -> Vec<AgentLogEntry> {
     let trimmed = line.trim();
-    if trimmed.is_empty() {
+    if is_ignorable_gemini_text_line(trimmed) {
         return vec![];
     }
 
@@ -72,6 +90,117 @@ pub fn parse_line(line: &str) -> Vec<AgentLogEntry> {
 
 fn parse_json_line(json: &Value) -> Vec<AgentLogEntry> {
     let mut entries = Vec::new();
+    let timestamp = json
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+    if let Some(event_type) = json.get("type").and_then(|v| v.as_str()) {
+        match event_type {
+            "init" => return vec![],
+            "message" => {
+                let role = json.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                if role == "user" {
+                    return vec![];
+                }
+
+                if role == "assistant" {
+                    let content = json
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_default();
+
+                    if is_ignorable_gemini_text_line(&content) {
+                        return vec![];
+                    }
+
+                    entries.push(AgentLogEntry {
+                        entry_type: AgentLogEntryType::Text,
+                        content,
+                        tool_name: None,
+                        file_path: None,
+                        timestamp,
+                    });
+                    return entries;
+                }
+            }
+            "tool_use" => {
+                let tool_name = json
+                    .get("tool_name")
+                    .or_else(|| json.get("tool"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let file_path = json
+                    .pointer("/parameters/file_path")
+                    .or_else(|| json.pointer("/parameters/path"))
+                    .or_else(|| json.pointer("/parameters/command"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                entries.push(AgentLogEntry {
+                    entry_type: AgentLogEntryType::ToolCall,
+                    content: json
+                        .get("parameters")
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    tool_name: Some(tool_name),
+                    file_path,
+                    timestamp,
+                });
+                return entries;
+            }
+            "tool_result" => {
+                let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                let content = json
+                    .get("output")
+                    .or_else(|| json.get("result"))
+                    .map(|v| {
+                        if let Some(text) = v.as_str() {
+                            text.to_string()
+                        } else {
+                            v.to_string()
+                        }
+                    })
+                    .unwrap_or_default();
+
+                if content.trim().is_empty() && status.eq_ignore_ascii_case("success") {
+                    return vec![];
+                }
+
+                entries.push(AgentLogEntry {
+                    entry_type: if status.eq_ignore_ascii_case("success") {
+                        AgentLogEntryType::ToolResult
+                    } else {
+                        AgentLogEntryType::Error
+                    },
+                    content,
+                    tool_name: None,
+                    file_path: None,
+                    timestamp,
+                });
+                return entries;
+            }
+            "result" => {
+                let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                if status.eq_ignore_ascii_case("success") {
+                    return vec![];
+                }
+
+                entries.push(AgentLogEntry {
+                    entry_type: AgentLogEntryType::Error,
+                    content: json.to_string(),
+                    tool_name: None,
+                    file_path: None,
+                    timestamp,
+                });
+                return entries;
+            }
+            _ => {}
+        }
+    }
 
     // Handle structured tool call events
     if let Some(tool_name) = json.get("tool").and_then(|v| v.as_str()) {
@@ -86,7 +215,7 @@ fn parse_json_line(json: &Value) -> Vec<AgentLogEntry> {
             content: json.get("input").map(|v| v.to_string()).unwrap_or_default(),
             tool_name: Some(tool_name.to_string()),
             file_path,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp,
         });
         return entries;
     }
@@ -110,19 +239,22 @@ fn parse_json_line(json: &Value) -> Vec<AgentLogEntry> {
             content,
             tool_name: None,
             file_path: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp,
         });
         return entries;
     }
 
     // Handle text content
     if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+        if is_ignorable_gemini_text_line(text) {
+            return vec![];
+        }
         entries.push(AgentLogEntry {
             entry_type: AgentLogEntryType::Text,
             content: text.to_string(),
             tool_name: None,
             file_path: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp,
         });
         return entries;
     }
@@ -133,7 +265,7 @@ fn parse_json_line(json: &Value) -> Vec<AgentLogEntry> {
         content: json.to_string(),
         tool_name: None,
         file_path: None,
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp,
     });
     entries
 }
@@ -158,4 +290,55 @@ fn extract_file_path(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_line, should_ignore_stderr_line};
+    use crate::AgentLogEntryType;
+
+    #[test]
+    fn parses_stream_json_message_and_tool_events() {
+        let assistant = parse_line(
+            r#"{"type":"message","timestamp":"2026-03-16T18:38:48.906Z","role":"assistant","content":"hello","delta":true}"#,
+        );
+        assert_eq!(assistant.len(), 1);
+        assert!(matches!(assistant[0].entry_type, AgentLogEntryType::Text));
+        assert_eq!(assistant[0].content, "hello");
+
+        let tool_use = parse_line(
+            r#"{"type":"tool_use","timestamp":"2026-03-16T18:39:30.709Z","tool_name":"run_shell_command","tool_id":"abc","parameters":{"command":"pwd","description":"Print pwd"}}"#,
+        );
+        assert_eq!(tool_use.len(), 1);
+        assert!(matches!(
+            tool_use[0].entry_type,
+            AgentLogEntryType::ToolCall
+        ));
+        assert_eq!(tool_use[0].tool_name.as_deref(), Some("run_shell_command"));
+
+        let tool_result = parse_line(
+            r#"{"type":"tool_result","timestamp":"2026-03-16T18:39:31.113Z","tool_id":"abc","status":"success","output":"/tmp/demo"}"#,
+        );
+        assert_eq!(tool_result.len(), 1);
+        assert!(matches!(
+            tool_result[0].entry_type,
+            AgentLogEntryType::ToolResult
+        ));
+        assert_eq!(tool_result[0].content, "/tmp/demo");
+    }
+
+    #[test]
+    fn ignores_gemini_startup_noise() {
+        assert!(
+            parse_line("Server 'mcpServers' supports tool updates. Listening for changes...")
+                .is_empty()
+        );
+        assert!(
+            parse_line("[ERROR] [IDEClient] Failed to connect to IDE companion extension.")
+                .is_empty()
+        );
+        assert!(should_ignore_stderr_line(
+            "[ERROR] [IDEClient] Failed to connect to IDE companion extension."
+        ));
+    }
 }

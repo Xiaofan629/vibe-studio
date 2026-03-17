@@ -139,6 +139,12 @@ export interface CreateWorkspaceRequest {
 // --- Agent ---
 export type AgentType = "claude_code" | "gemini" | "codex"
 
+export type ClaudePermissionMode =
+  | "default"
+  | "plan"
+  | "acceptEdits"
+  | "dontAsk"
+
 export type AgentProcessStatus = "running" | "completed" | "failed" | "killed"
 
 export interface AgentProcess {
@@ -339,10 +345,38 @@ export interface TurnUsage {
 }
 
 export interface SessionStats {
+  model: string | null
   totalUsage: TurnUsage | null
   totalTokens: number | null
   totalDurationMs: number
   contextWindowUsedTokens: number | null
   contextWindowMaxTokens: number | null
   contextWindowUsagePercent: number | null
+}
+
+// --- File Picker & Slash Commands ---
+export interface SavedImage {
+  path: string
+  relative_path: string
+}
+
+export interface FileEntry {
+  name: string
+  path: string
+  is_directory: boolean
+  extension: string | null
+  size: number | null
+}
+
+export interface SlashCommand {
+  id: string
+  name: string
+  full_command: string
+  description: string | null
+  content: string | null
+  namespace: string | null
+  scope: "project" | "global" | null
+  has_bash_commands: boolean
+  has_file_references: boolean
+  accepts_arguments: boolean
 }

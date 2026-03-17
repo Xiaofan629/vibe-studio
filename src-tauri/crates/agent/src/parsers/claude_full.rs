@@ -60,14 +60,8 @@ pub fn read_claude_session_full(project_path: &str) -> Result<ConversationDetail
     let project_dir = claude_dir.join(&encoded);
 
     if !project_dir.exists() {
-        eprintln!(
-            "[ERROR] Project directory does not exist: {:?}",
-            project_dir
-        );
-        return Err(format!(
-            "Project directory does not exist: {:?}",
-            project_dir
-        ));
+        // 没有历史记录是正常情况，返回空会话
+        return Ok(create_empty_conversation(project_path));
     }
 
     let mut jsonl_files: Vec<_> = fs::read_dir(&project_dir)
@@ -86,8 +80,8 @@ pub fn read_claude_session_full(project_path: &str) -> Result<ConversationDetail
         .collect();
 
     if jsonl_files.is_empty() {
-        eprintln!("[ERROR] No session files found in {:?}", project_dir);
-        return Err(format!("No session files found in {:?}", project_dir));
+        // 没有历史记录是正常情况，返回空会话
+        return Ok(create_empty_conversation(project_path));
     }
 
     jsonl_files.sort_by_key(|e| {
@@ -99,6 +93,27 @@ pub fn read_claude_session_full(project_path: &str) -> Result<ConversationDetail
 
     let latest_file = &jsonl_files[0].path();
     parse_conversation_detail(latest_file, project_path)
+}
+
+/// 创建一个空的会话记录（当没有历史记录时）
+fn create_empty_conversation(project_path: &str) -> ConversationDetail {
+    let now = Utc::now();
+
+    ConversationDetail {
+        summary: ConversationSummary {
+            id: format!("empty-{}", now.timestamp()),
+            folder_path: Some(project_path.to_string()),
+            folder_name: Some(folder_name_from_path(project_path)),
+            title: None,
+            started_at: now.to_rfc3339(),
+            ended_at: None,
+            message_count: 0,
+            model: None,
+            git_branch: None,
+        },
+        turns: Vec::new(),
+        session_stats: None,
+    }
 }
 
 fn parse_conversation_detail(
@@ -245,7 +260,7 @@ fn parse_conversation_detail(
     let folder_name = folder_path.as_ref().map(|p| folder_name_from_path(p));
 
     let turns = group_into_turns(messages);
-    let session_stats = compute_session_stats(&turns);
+    let session_stats = compute_session_stats(&turns, model.as_deref());
 
     let conversation_id = path
         .file_stem()
@@ -521,7 +536,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
     turns
 }
 
-fn compute_session_stats(turns: &[MessageTurn]) -> Option<SessionStats> {
+fn compute_session_stats(turns: &[MessageTurn], model: Option<&str>) -> Option<SessionStats> {
     let mut total_input = 0u64;
     let mut total_output = 0u64;
     let mut total_cache_creation = 0u64;
@@ -558,6 +573,7 @@ fn compute_session_stats(turns: &[MessageTurn]) -> Option<SessionStats> {
         context_window_used_tokens: None,
         context_window_max_tokens: None,
         context_window_usage_percent: None,
+        model: model.map(|s| s.to_string()),
     })
 }
 

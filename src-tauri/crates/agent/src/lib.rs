@@ -120,7 +120,7 @@ pub struct MessageTurn {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TurnRole {
     User,
@@ -177,4 +177,5 @@ pub struct SessionStats {
     pub context_window_used_tokens: Option<u64>,
     pub context_window_max_tokens: Option<u64>,
     pub context_window_usage_percent: Option<f64>,
+    pub model: Option<String>,
 }

@@ -42,8 +42,12 @@ pub fn run() {
             vibe_studio_commands::get_project,
             vibe_studio_commands::delete_project,
             vibe_studio_commands::list_directory,
+            vibe_studio_commands::list_directory_contents,
+            vibe_studio_commands::search_files,
+            vibe_studio_commands::save_pasted_image,
             vibe_studio_commands::get_home_dir,
             vibe_studio_commands::get_repo_branches,
+            vibe_studio_commands::slash_commands_list,
             // Session commands
             vibe_studio_commands::list_sessions,
             vibe_studio_commands::list_sessions_by_workspace,
@@ -56,6 +60,8 @@ pub fn run() {
             vibe_studio_commands::load_claude_session_history,
             vibe_studio_commands::load_claude_session,
             vibe_studio_commands::load_claude_session_full,
+            vibe_studio_commands::load_codex_session_full,
+            vibe_studio_commands::load_gemini_session_full,
             // Agent commands
             vibe_studio_commands::discover_agents,
             vibe_studio_commands::start_agent,
@@ -106,6 +112,8 @@ pub fn run() {
             vibe_studio_commands::list_workspaces,
             vibe_studio_commands::get_workspace,
             vibe_studio_commands::update_workspace_status,
+            vibe_studio_commands::update_workspace_title,
+            vibe_studio_commands::update_workspace_agent,
             vibe_studio_commands::delete_workspace,
         ])
         .run(tauri::generate_context!())

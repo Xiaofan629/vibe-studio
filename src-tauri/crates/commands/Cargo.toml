@@ -13,6 +13,8 @@ chrono = { workspace = true }
 sea-orm = { workspace = true }
 tauri = { version = "2", features = [] }
 dirs = "6"
+serde_yaml = "0.9"
+base64 = "0.22"
 vibe-studio-db = { path = "../db" }
 vibe-studio-git = { path = "../git" }
 vibe-studio-agent = { path = "../agent" }

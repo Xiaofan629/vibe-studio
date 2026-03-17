@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { invoke } from "@/lib/tauri"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { AlertCircle, Loader2, Copy } from "lucide-react"
 import type { PrInfo, GitBranch, AgentType } from "@/lib/types"
 
 interface CreatePRDialogProps {
@@ -64,6 +64,7 @@ export function CreatePRDialog({
   const [branches, setBranches] = useState<BranchOption[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     setTitle(defaultTitle)
@@ -291,9 +292,24 @@ export function CreatePRDialog({
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              {error}
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="min-w-0 flex-1 line-clamp-2">
+                  {error}
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(error)
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 2000)
+                  }}
+                  className="shrink-0 rounded px-2 py-1 text-xs opacity-70 hover:opacity-100"
+                  title="复制错误信息"
+                >
+                  {copied ? "已复制" : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              </div>
             </div>
           )}
         </div>

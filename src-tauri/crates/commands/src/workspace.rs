@@ -35,6 +35,7 @@ pub struct WorkspaceRepoInfo {
 pub struct CreateWorkspaceRepo {
     pub path: String,
     pub branch: String,
+    pub use_local_project: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -99,21 +100,24 @@ pub async fn create_workspace(
 
     let branch_name = format!("vibe-studio/{}-{}", date_str, random_id);
     let worktree_dir = worktrees_base.join(&first_repo_name);
+    let first_repo_uses_local_project = first_repo.use_local_project.unwrap_or(false);
 
     // Get base commit from the user-selected branch
-    let base_commit = vibe_studio_git::cli::run_git(
-        first_repo_path,
-        &["rev-parse", &first_repo.branch],
-    )
-    .map(|s| s.trim().to_string())
-    .unwrap_or_default();
+    let base_commit =
+        vibe_studio_git::cli::run_git(first_repo_path, &["rev-parse", &first_repo.branch])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
 
     // Create git worktree from the user-selected branch
     // First, ensure we have a local reference to the target branch
     let target_branch = &first_repo.branch;
 
-    // Check if this is a remote branch (starts with "origin/")
-    let worktree_path_str = if target_branch.starts_with("origin/") {
+    // For local project mode, keep operating in the original repo path so the
+    // existing branch/PR state remains intact.
+    let worktree_path_str = if first_repo_uses_local_project {
+        None
+    } else if target_branch.starts_with("origin/") {
+        // Check if this is a remote branch (starts with "origin/")
         // For remote branches, create worktree directly from the remote branch
         match vibe_studio_git::cli::run_git(
             first_repo_path,
@@ -161,7 +165,11 @@ pub async fn create_workspace(
         agent_type: Set(request.agent_type.clone()),
         initial_prompt: Set(request.initial_prompt.clone()),
         project_id: Set(first_project_id.clone()),
-        branch: Set(branch_name.clone()),
+        branch: Set(if first_repo_uses_local_project {
+            first_repo.branch.clone()
+        } else {
+            branch_name.clone()
+        }),
         worktree_path: Set(worktree_path_str.clone()),
         base_commit: Set(if base_commit.is_empty() {
             None
@@ -183,6 +191,7 @@ pub async fn create_workspace(
         let repo_id = uuid::Uuid::new_v4().to_string();
         let repo_name = repo_name_from_path(&repo_req.path);
         let repo_path = std::path::Path::new(&repo_req.path);
+        let use_local_project = repo_req.use_local_project.unwrap_or(false);
 
         // Ensure project exists in DB
         let project_id = ensure_project(&state, &repo_req.path, &repo_name, &now).await?;
@@ -197,18 +206,18 @@ pub async fn create_workspace(
         let worktree_dir = worktrees_base.join(&repo_name);
 
         // Get base commit from the user-selected branch
-        let base_commit = vibe_studio_git::cli::run_git(
-            repo_path,
-            &["rev-parse", &repo_req.branch],
-        )
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+        let base_commit =
+            vibe_studio_git::cli::run_git(repo_path, &["rev-parse", &repo_req.branch])
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
 
         // Create git worktree from the user-selected branch
         let target_branch = &repo_req.branch;
 
-        // Check if this is a remote branch (starts with "origin/")
-        let worktree_path_str = if target_branch.starts_with("origin/") {
+        let worktree_path_str = if use_local_project {
+            None
+        } else if target_branch.starts_with("origin/") {
+            // Check if this is a remote branch (starts with "origin/")
             // For remote branches, create worktree directly from the remote branch
             match vibe_studio_git::cli::run_git(
                 repo_path,
@@ -280,8 +289,16 @@ pub async fn create_workspace(
             workspace_id: Set(workspace_id.clone()),
             project_id: Set(project_id.clone()),
             path: Set(repo_req.path.clone()),
-            branch: Set(repo_branch_name.clone()),
-            base_branch: Set(Some(repo_req.branch.clone())),
+            branch: Set(if use_local_project {
+                repo_req.branch.clone()
+            } else {
+                repo_branch_name.clone()
+            }),
+            base_branch: Set(if use_local_project {
+                None
+            } else {
+                Some(repo_req.branch.clone())
+            }),
             worktree_path: Set(worktree_path_str.clone()),
             base_commit: Set(if base_commit.is_empty() {
                 None
@@ -301,8 +318,16 @@ pub async fn create_workspace(
             project_id,
             path: repo_req.path.clone(),
             name: repo_name,
-            branch: repo_branch_name.clone(),
-            base_branch: Some(repo_req.branch.clone()),
+            branch: if use_local_project {
+                repo_req.branch.clone()
+            } else {
+                repo_branch_name.clone()
+            },
+            base_branch: if use_local_project {
+                None
+            } else {
+                Some(repo_req.branch.clone())
+            },
             worktree_path: worktree_path_str,
             base_commit: if base_commit.is_empty() {
                 None
@@ -548,6 +573,45 @@ pub async fn update_workspace_status(
     let now = chrono::Utc::now().to_rfc3339();
     workspace::Entity::update_many()
         .col_expr(workspace::Column::Status, Expr::value(status))
+        .col_expr(workspace::Column::UpdatedAt, Expr::value(now))
+        .filter(workspace::Column::Id.eq(&workspace_id))
+        .exec(&state.db.conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_workspace_title(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    title: Option<String>,
+) -> std::result::Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let normalized_title = title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    workspace::Entity::update_many()
+        .col_expr(workspace::Column::Title, Expr::value(normalized_title))
+        .col_expr(workspace::Column::UpdatedAt, Expr::value(now))
+        .filter(workspace::Column::Id.eq(&workspace_id))
+        .exec(&state.db.conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_workspace_agent(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    agent_type: String,
+) -> std::result::Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    workspace::Entity::update_many()
+        .col_expr(workspace::Column::AgentType, Expr::value(agent_type))
         .col_expr(workspace::Column::UpdatedAt, Expr::value(now))
         .filter(workspace::Column::Id.eq(&workspace_id))
         .exec(&state.db.conn)

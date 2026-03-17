@@ -13,6 +13,13 @@ pub struct AgentInfoResponse {
     pub path: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentOutputEvent {
+    process_id: String,
+    entry: AgentLogEntry,
+}
+
 #[tauri::command]
 pub async fn discover_agents() -> std::result::Result<Vec<AgentInfoResponse>, String> {
     let agents = vibe_studio_agent::discovery::discover_agents();
@@ -37,6 +44,7 @@ pub async fn start_agent(
     working_dir: String,
     prompt: String,
     continue_session: Option<bool>,
+    permission_mode: Option<String>,
 ) -> std::result::Result<(), String> {
     let agent_type = match agent_type.as_str() {
         "claude_code" | "claudecode" => AgentType::ClaudeCode,
@@ -52,7 +60,13 @@ pub async fn start_agent(
     let pid = process_id.clone();
     tokio::spawn(async move {
         while let Some(entry) = rx.recv().await {
-            let _ = app_handle.emit("agent:output", &entry);
+            let _ = app_handle.emit(
+                "agent:output",
+                &AgentOutputEvent {
+                    process_id: pid.clone(),
+                    entry,
+                },
+            );
         }
         let _ = app_handle.emit("agent:finished", &pid);
     });
@@ -65,6 +79,7 @@ pub async fn start_agent(
             std::path::Path::new(&working_dir),
             &prompt,
             continue_session.unwrap_or(false),
+            permission_mode,
             tx,
         )
         .await

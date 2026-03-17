@@ -100,7 +100,7 @@ src-tauri/
 
 ## Tauri 命令分层
 
-命令注册在 [src-tauri/src/lib.rs](/Users/sxiaoya/Desktop/study/vibe-studio/src-tauri/src/lib.rs)，主要分为：
+命令注册在 [src-tauri/src/lib.rs](src-tauri/src/lib.rs)，主要分为：
 
 - 项目：`list_projects`、`add_local_project`、`delete_project`、`list_directory`
 - 工作区：`create_workspace`、`list_workspaces`、`get_workspace`、`update_workspace_status`
@@ -113,7 +113,7 @@ src-tauri/
 
 ## 关键数据模型
 
-前端类型集中在 [src/lib/types.ts](/Users/sxiaoya/Desktop/study/vibe-studio/src/lib/types.ts)。
+前端类型集中在 [src/lib/types.ts](src/lib/types.ts)。
 
 核心实体：
 
@@ -144,7 +144,7 @@ src-tauri/
 - macOS 默认目录：`~/Library/Application Support/app.vibe-studio/`
 - 工作区 worktree：`~/Library/Application Support/app.vibe-studio/worktrees/<workspace-id>/`
 
-相关实现见 [src-tauri/crates/db/src/lib.rs](/Users/sxiaoya/Desktop/study/vibe-studio/src-tauri/crates/db/src/lib.rs)。
+相关实现见 [src-tauri/crates/db/src/lib.rs](src-tauri/crates/db/src/lib.rs)。
 
 ## Git / PR / MR 依赖
 
@@ -153,7 +153,7 @@ src-tauri/
 - GitLab MR 能力依赖 `glab`
 - 远端评论导入通过 `git_get_remote_review_bundle` 获取
 
-PR/MR 相关实现见 [src-tauri/crates/git/src/pr.rs](/Users/sxiaoya/Desktop/study/vibe-studio/src-tauri/crates/git/src/pr.rs)。
+PR/MR 相关实现见 [src-tauri/crates/git/src/pr.rs](src-tauri/crates/git/src/pr.rs)。
 
 ## Agent 相关约定
 
@@ -166,8 +166,65 @@ PR/MR 相关实现见 [src-tauri/crates/git/src/pr.rs](/Users/sxiaoya/Desktop/st
 
 前端封装见：
 
-- [src/hooks/useAgent.ts](/Users/sxiaoya/Desktop/study/vibe-studio/src/hooks/useAgent.ts)
-- [src/lib/tauri.ts](/Users/sxiaoya/Desktop/study/vibe-studio/src/lib/tauri.ts)
+- [src/hooks/useAgent.ts](src/hooks/useAgent.ts)
+- [src/lib/tauri.ts](src/lib/tauri.ts)
+
+## 工作区创建与会话初始化流程
+
+### 首页创建工作区
+
+**文件：** [src/app/page.tsx:322-349](src/app/page.tsx#L322-L349)
+
+1. 用户选择仓库、分支、Agent 和初始提示词
+2. 调用 `workspacesApi.create()` 创建工作区
+3. 将 `workspaceId` 和 `initialPrompt` 存入 sessionStorage
+4. 跳转到 `/project` 页面
+
+### 工作区页面初始化
+
+**文件：** [src/app/project/page.tsx:170-244](src/app/project/page.tsx#L170-L244)
+
+1. 页面挂载时从 sessionStorage 读取 `workspaceId` 和 `initialPrompt`
+2. 调用 `workspacesApi.get(workspaceId)` 获取工作区详情
+3. **关键修复：在工作区数据加载成功后立即创建会话**
+   - 检查是否有现有的匹配会话
+   - 如果没有，立即调用 `createSession` 创建新会话
+   - 避免依赖 useEffect 的时序问题
+
+4. **会话切换逻辑** ([src/app/project/page.tsx:247-337](src/app/project/page.tsx#L247-L337))
+   - 使用 `prevActiveRepoRef` 跟踪上一个活跃仓库
+   - 只在 active repo 真正变化时才重新执行会话逻辑
+   - 避免不必要的会话重新加载
+
+### 初始提示词自动发送
+
+**文件：** [src/components/agent/AgentChat.tsx:426-452](src/components/agent/AgentChat.tsx#L426-L452)
+
+1. 从 props 接收 `initialPrompt`（由工作区页面通过 `chatInitialPrompt` 传递）
+2. 检查发送条件：
+   - `initialPrompt` 存在
+   - 未发送过（`!initialPromptSentRef.current`）
+   - Agent 未运行（`status !== "running"`）
+   - 会话已加载（`activeSessionId` 存在）
+   - 会话没有现有用户消息（避免重复发送）
+3. 满足条件时自动调用 `handleSend(initialPrompt)`
+
+## 错误处理组件
+
+### PR 创建对话框
+
+**文件：** [src/components/pr/CreatePRDialog.tsx:293-313](src/components/pr/CreatePRDialog.tsx#L293-L313)
+
+- 错误信息限制为 2 行显示（`line-clamp-2`）
+- 右侧提供复制按钮，一键复制完整错误到剪贴板
+- 复制后显示"已复制"状态，2 秒后恢复
+
+### 提交流程对话框
+
+**文件：** [src/components/commit/CommitFlowDialog.tsx:734-754](src/components/commit/CommitFlowDialog.tsx#L734-L754)
+
+- 同样的错误显示和复制逻辑
+- 适用于 GitHub Push Protection 等长错误信息场景
 
 ## 代码修改时的注意事项
 
@@ -187,20 +244,24 @@ PR/MR 相关实现见 [src-tauri/crates/git/src/pr.rs](/Users/sxiaoya/Desktop/st
 - 工作流相关状态优先放 Zustand store，而不是层层 props 传递。
 - 与后端交互优先走 `src/lib/tauri.ts` 和 hooks，不要在组件里散落 `invoke()` 细节。
 - Diff、Review、Commit、PR 是一条连续链路，改动其中一处时要检查上下游是否仍兼容。
+- **工作区初始化与会话创建有严格的时序依赖，修改时需特别注意 React effect 的执行顺序**
 
 ## 真正需要先验证的地方
 
 以下改动最容易引发联动问题，提交前建议优先验证：
 
-- 工作区创建与 worktree 生成
+- 工作区创建与会话初始化流程（**高频问题区域**）
 - Agent 启动、续聊、结束状态回写
+- 初始提示词自动发送逻辑
 - Review 评论加载与评审上下文构建
 - 选择性提交 patch 的生成和提交
 - PR/MR 获取、创建、远端评论导入
 - 终端创建与目录切换
+- 错误信息显示与复制功能
 
 ## 文档维护原则
 
 - README 偏对外介绍、开源宣传、功能总览。
 - CLAUDE.md 偏内部协作、架构理解、开发注意事项。
 - 两份文档都使用中文，并且只描述仓库中已经存在或明确落地的能力。
+- 文档更新时需同步检查代码实现，确保描述与实际一致。

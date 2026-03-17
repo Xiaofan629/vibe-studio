@@ -23,6 +23,7 @@ import { useProject } from "@/hooks/useProject"
 import { useReview } from "@/hooks/useReview"
 import { BranchSelector } from "@/components/project/BranchSelector"
 import { ReviewContextBanner } from "@/components/agent/ReviewContextBanner"
+import { AgentChat } from "@/components/agent/AgentChat"
 import { ReviewPanel } from "@/components/review/ReviewPanel"
 import { TerminalPanel } from "@/components/terminal/TerminalPanel"
 import { PRBadge } from "@/components/pr/PRBadge"
@@ -46,39 +47,42 @@ const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
   { value: "gemini", label: "Gemini CLI" },
 ]
 
+const WORKSPACE_AGENT_KEY_PREFIX = "vibe-studio:workspace-agent:"
+
+function readStoredWorkspaceAgent(workspaceId: string): AgentType | null {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const value = window.localStorage.getItem(
+    `${WORKSPACE_AGENT_KEY_PREFIX}${workspaceId}`
+  )
+  if (
+    value === "claude_code" ||
+    value === "codex" ||
+    value === "gemini"
+  ) {
+    return value
+  }
+  return null
+}
+
+function persistWorkspaceAgent(workspaceId: string, agentType: AgentType) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.setItem(
+    `${WORKSPACE_AGENT_KEY_PREFIX}${workspaceId}`,
+    agentType
+  )
+}
+
 const EDITOR_OPTIONS = [
   { value: "vscode", label: "VSCode", icon: Code2 },
   { value: "cursor", label: "Cursor", icon: Code2 },
   { value: "trae", label: "Trae", icon: Code2 },
 ]
-
-function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
-
-function buildAgentLaunchCommand(
-  agentType: AgentType,
-  initialPrompt?: string | null
-): string {
-  const trimmedPrompt = initialPrompt?.trim()
-
-  switch (agentType) {
-    case "claude_code":
-      return trimmedPrompt
-        ? `claude --continue || claude ${quoteShellArg(trimmedPrompt)}`
-        : "claude --continue || claude"
-    case "codex":
-      return trimmedPrompt
-        ? `codex resume --last --no-alt-screen || codex --no-alt-screen ${quoteShellArg(trimmedPrompt)}`
-        : "codex resume --last --no-alt-screen || codex --no-alt-screen"
-    case "gemini":
-      return trimmedPrompt
-        ? `gemini -r "latest" ${quoteShellArg(trimmedPrompt)} || gemini ${quoteShellArg(trimmedPrompt)}`
-        : 'gemini -r "latest" || gemini'
-    default:
-      return ""
-  }
-}
 
 export default function ProjectPage() {
   const t = useTranslations()
@@ -132,16 +136,7 @@ export default function ProjectPage() {
   // Work directory: prefer worktree path, fall back to original path
   const workDir = activeRepo?.worktree_path ?? activeRepo?.path ?? null
   const chatWorkDir = workspaceRootDir ?? workDir
-  const chatTerminalKey = currentWorkspace?.id
-    ? `workspace-${currentWorkspace.id}-chat-${selectedAgent}`
-    : activeRepo?.id
-      ? `repo-${activeRepo.id}-chat-${selectedAgent}`
-      : null
   const chatInitialPrompt = chatPromptConsumed ? null : initialPrompt
-  const chatInitialCommand = buildAgentLaunchCommand(
-    selectedAgent,
-    chatInitialPrompt
-  )
 
   const {
     status: agentStatus,
@@ -178,12 +173,63 @@ export default function ProjectPage() {
     if (workspaceId) {
       workspacesApi
         .get(workspaceId)
-        .then((ws) => {
+        .then(async (ws) => {
           if (ws) {
+            const restoredAgent =
+              readStoredWorkspaceAgent(ws.id) ?? (ws.agent_type as AgentType)
             setCurrentWorkspace(ws)
-            setSelectedAgent(ws.agent_type as AgentType)
+            setSelectedAgent(restoredAgent)
+
+            // Ensure we have at least one repo and it's set as active
             if (ws.repos.length > 0) {
-              setActiveRepoId(ws.repos[0].id)
+              const firstRepo = ws.repos[0]
+              setActiveRepoId(firstRepo.id)
+
+              // Immediately create or load session for the first repo
+              // This avoids timing issues with useEffect dependencies
+              try {
+                const existingSessions = await invoke<
+                  {
+                    id: string
+                    project_id: string
+                    agent_type: AgentType
+                    branch: string
+                    title: string | null
+                    status: string
+                    updated_at: string
+                  }[]
+                >("list_sessions_by_workspace", {
+                  workspaceId: ws.id,
+                })
+
+                const latestSession = existingSessions.find(
+                  (session) =>
+                    session.project_id === firstRepo.project_id &&
+                    session.agent_type === restoredAgent
+                )
+
+                if (latestSession) {
+                  setWorkspaceSessionId(latestSession.id)
+                  await loadSession(latestSession.id)
+                } else {
+                  // Create new session immediately
+                  const createdSession = await createSession({
+                    project_id: firstRepo.project_id,
+                    branch: firstRepo.branch,
+                    agent_type: restoredAgent,
+                    title:
+                      ws.title ??
+                      ws.initial_prompt?.slice(0, 60) ??
+                      firstRepo.name,
+                    workspace_id: ws.id,
+                  })
+                  setWorkspaceSessionId(createdSession.id)
+                }
+              } catch (err) {
+                console.error("Failed to ensure workspace session on load:", err)
+              }
+            } else {
+              console.error("Workspace has no repos:", ws.id)
             }
           }
         })
@@ -212,14 +258,66 @@ export default function ProjectPage() {
   }, [workDir, fetchBranches])
 
   useEffect(() => {
+    if (!currentWorkspace) {
+      return
+    }
+
+    persistWorkspaceAgent(currentWorkspace.id, selectedAgent)
+  }, [currentWorkspace, selectedAgent])
+
+  useEffect(() => {
+    if (!currentWorkspace || currentWorkspace.agent_type === selectedAgent) {
+      return
+    }
+
+    const previousWorkspace = currentWorkspace
+    const previousWorkspaces = allWorkspaces
+    const nextWorkspace = {
+      ...currentWorkspace,
+      agent_type: selectedAgent,
+    }
+
+    setCurrentWorkspace(nextWorkspace)
+    setAllWorkspaces((items) =>
+      items.map((workspace) =>
+        workspace.id === currentWorkspace.id
+          ? { ...workspace, agent_type: selectedAgent }
+          : workspace
+      )
+    )
+
+    workspacesApi.updateAgent(currentWorkspace.id, selectedAgent).catch((err) => {
+      console.error("Failed to update workspace agent:", err)
+      setCurrentWorkspace(previousWorkspace)
+      setAllWorkspaces(previousWorkspaces)
+    })
+  }, [allWorkspaces, currentWorkspace, selectedAgent])
+
+  // Track previous active repo to detect when it actually changes
+  const prevActiveRepoRef = useRef<WorkspaceRepo | null>(null)
+
+  useEffect(() => {
     if (!currentWorkspace || !activeRepo) {
-      setWorkspaceSessionId(null)
-      setReviewContextPreview(null)
+      // Only clear session if we had a valid workspace before
+      if (prevActiveRepoRef.current && !activeRepo) {
+        setWorkspaceSessionId(null)
+        setReviewContextPreview(null)
+      }
+      prevActiveRepoRef.current = activeRepo
+      return
+    }
+
+    // Skip if active repo hasn't actually changed (avoid unnecessary re-runs)
+    if (
+      prevActiveRepoRef.current?.id === activeRepo.id &&
+      prevActiveRepoRef.current?.project_id === activeRepo.project_id &&
+      workspaceSessionId !== null
+    ) {
+      prevActiveRepoRef.current = activeRepo
       return
     }
 
     let cancelled = false
-    setWorkspaceSessionId(null)
     setReviewContextPreview(null)
 
     const ensureWorkspaceSession = async () => {
@@ -228,6 +326,7 @@ export default function ProjectPage() {
           {
             id: string
             project_id: string
+            agent_type: AgentType
             branch: string
             title: string | null
             status: string
@@ -242,7 +341,9 @@ export default function ProjectPage() {
         }
 
         const latestSession = existingSessions.find(
-          (session) => session.project_id === activeRepo.project_id
+          (session) =>
+            session.project_id === activeRepo.project_id &&
+            session.agent_type === selectedAgent
         )
         if (latestSession) {
           if (!cancelled) {
@@ -251,6 +352,7 @@ export default function ProjectPage() {
           if (latestSession.id !== activeSessionIdRef.current) {
             await loadSession(latestSession.id)
           }
+          prevActiveRepoRef.current = activeRepo
           return
         }
 
@@ -267,6 +369,7 @@ export default function ProjectPage() {
         if (!cancelled) {
           setWorkspaceSessionId(createdSession.id)
         }
+        prevActiveRepoRef.current = activeRepo
       } catch (err) {
         console.error("Failed to ensure workspace session:", err)
       }
@@ -281,12 +384,14 @@ export default function ProjectPage() {
     activeRepo?.branch,
     activeRepo?.name,
     activeRepo?.project_id,
+    activeRepo?.id,
     createSession,
     currentWorkspace?.id,
     currentWorkspace?.initial_prompt,
     currentWorkspace?.title,
     loadSession,
     selectedAgent,
+    workspaceSessionId,
   ])
 
   const loadPrInfo = useCallback(() => {
@@ -297,13 +402,26 @@ export default function ProjectPage() {
 
     setPrInfo(undefined)
 
-    void invoke<PrInfo | null>("git_get_pr_info", {
-      repoPath: workDir,
-      branch: headBranch,
-    })
-      .then((info) => setPrInfo(info))
+    const prLookupBranches = [
+      headBranch,
+      ...(headBranch.startsWith("vibe-studio/") &&
+      reviewBaseBranch &&
+      !reviewBaseBranch.startsWith("origin/")
+        ? [reviewBaseBranch]
+        : []),
+    ]
+
+    void Promise.all(
+      prLookupBranches.map((branch) =>
+        invoke<PrInfo | null>("git_get_pr_info", {
+          repoPath: workDir,
+          branch,
+        }).catch(() => null)
+      )
+    )
+      .then((infos) => setPrInfo(infos.find((info) => info) ?? null))
       .catch(() => setPrInfo(null))
-  }, [headBranch, workDir])
+  }, [headBranch, reviewBaseBranch, workDir])
 
   // Load PR info when repo changes
   useEffect(() => {
@@ -348,24 +466,6 @@ export default function ProjectPage() {
       cancelled = true
     }
   }, [activeSessionId, loadComments, workspaceSessionId])
-
-  useEffect(() => {
-    if (
-      activeTab === "chat" &&
-      chatWorkDir &&
-      chatTerminalKey &&
-      initialPrompt &&
-      !chatPromptConsumed
-    ) {
-      setChatPromptConsumed(true)
-    }
-  }, [
-    activeTab,
-    chatPromptConsumed,
-    chatTerminalKey,
-    chatWorkDir,
-    initialPrompt,
-  ])
 
   useEffect(() => {
     if (
@@ -418,7 +518,7 @@ export default function ProjectPage() {
     setWorkspaceSessionId(null)
     setReviewContextPreview(null)
     setCurrentWorkspace(ws)
-    setSelectedAgent(ws.agent_type as AgentType)
+    setSelectedAgent(readStoredWorkspaceAgent(ws.id) ?? (ws.agent_type as AgentType))
     if (ws.repos.length > 0) {
       setActiveRepoId(ws.repos[0].id)
     }
@@ -705,11 +805,16 @@ export default function ProjectPage() {
               (activeRepo && workDir ? (
                 <div className="flex h-full flex-col">
                   <div className="min-h-0 flex-1">
-                    <TerminalPanel
-                      projectPath={chatWorkDir}
-                      terminalKey={chatTerminalKey}
-                      initialCommand={chatInitialCommand}
-                      embedded
+                    <AgentChat
+                      projectId={activeRepo.project_id}
+                      projectPath={chatWorkDir ?? workDir}
+                      originalProjectPath={activeRepo.path}
+                      branch={activeRepo.branch}
+                      agentType={selectedAgent}
+                      sessionId={workspaceSessionId ?? undefined}
+                      workspaceId={currentWorkspace?.id}
+                      initialPrompt={chatInitialPrompt ?? undefined}
+                      onInitialPromptConsumed={() => setChatPromptConsumed(true)}
                     />
                   </div>
                 </div>

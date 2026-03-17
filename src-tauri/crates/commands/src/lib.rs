@@ -5,6 +5,7 @@ mod git;
 mod project;
 mod review;
 mod session;
+mod slash_commands;
 mod terminal;
 mod workspace;
 
@@ -27,5 +28,6 @@ pub use git::*;
 pub use project::*;
 pub use review::*;
 pub use session::*;
+pub use slash_commands::*;
 pub use terminal::*;
 pub use workspace::*;

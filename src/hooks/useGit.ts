@@ -4,6 +4,13 @@ import { useCallback, useState } from "react"
 import { invoke } from "@/lib/tauri"
 import type { GitBranch, DiffFile } from "@/lib/types"
 
+type RawGitBranch = GitBranch & {
+  is_remote?: boolean
+  is_current?: boolean
+  last_commit_sha?: string | null
+  last_commit_message?: string | null
+}
+
 type RawDiffLine = {
   content: string
   kind: DiffFile["hunks"][number]["lines"][number]["kind"]
@@ -67,6 +74,17 @@ function normalizeDiffFile(file: RawDiffFile): DiffFile {
   }
 }
 
+function normalizeBranch(branch: RawGitBranch): GitBranch {
+  return {
+    name: branch.name,
+    isRemote: branch.isRemote ?? branch.is_remote ?? false,
+    isCurrent: branch.isCurrent ?? branch.is_current ?? false,
+    lastCommitSha: branch.lastCommitSha ?? branch.last_commit_sha ?? null,
+    lastCommitMessage:
+      branch.lastCommitMessage ?? branch.last_commit_message ?? null,
+  }
+}
+
 export function useGit(repoPath: string | null) {
   const [branches, setBranches] = useState<GitBranch[]>([])
   const [currentBranch, setCurrentBranch] = useState<string | null>(null)
@@ -77,10 +95,10 @@ export function useGit(repoPath: string | null) {
     setLoading(true)
     try {
       const [branchList, current] = await Promise.all([
-        invoke<GitBranch[]>("git_branches", { repoPath }),
+        invoke<RawGitBranch[]>("git_branches", { repoPath }),
         invoke<string>("git_current_branch", { repoPath }),
       ])
-      setBranches(branchList)
+      setBranches(branchList.map(normalizeBranch))
       setCurrentBranch(current)
     } catch (err) {
       console.error("Failed to fetch branches:", err)

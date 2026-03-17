@@ -2,6 +2,7 @@
 
 import { useCallback } from "react"
 import {
+  emitWorkspaceStatusChanged,
   invoke,
   registerCallbacks,
   sessionsApi,
@@ -12,6 +13,7 @@ import type {
   AgentLogEntry,
   AgentType,
   AgentInfo,
+  ClaudePermissionMode,
   Session,
   CreateSessionRequest,
 } from "@/lib/types"
@@ -22,6 +24,7 @@ const PROCESS_BINDINGS_KEY = "vibe-studio:agent-process-bindings"
 interface ProcessBinding {
   sessionId: string | null
   workspaceId: string | null
+  agentType: AgentType | null
 }
 
 function readProcessBindings(): Record<string, ProcessBinding> {
@@ -65,15 +68,20 @@ async function reconcilePersistedProcesses() {
   const bindings = readProcessBindings()
   await Promise.all(
     Object.entries(bindings).map(async ([processId, binding]) => {
+      let shouldRemoveBinding = true
       try {
         const running = await invoke<boolean>("is_agent_running", { processId })
         if (running) {
-          useAgentStore.setState({
+          shouldRemoveBinding = false
+          useAgentStore.getState().setWorkspaceRuntime(
+            binding.workspaceId,
+            binding.agentType,
+            {
             activeProcessId: processId,
             activeSessionId: binding.sessionId,
-            activeWorkspaceId: binding.workspaceId,
             status: "running",
-          })
+            }
+          )
           return
         }
 
@@ -93,7 +101,9 @@ async function reconcilePersistedProcesses() {
           }
         }
       } finally {
-        removeProcessBinding(processId)
+        if (shouldRemoveBinding) {
+          removeProcessBinding(processId)
+        }
       }
     })
   )
@@ -104,26 +114,44 @@ function registerCallbacksOnce() {
   callbacksRegistered = true
 
   registerCallbacks(
-    (entry: AgentLogEntry) => {
+    ({ processId, entry }: { processId: string; entry: AgentLogEntry }) => {
       const state = useAgentStore.getState()
+      const binding = getProcessBinding(processId)
+      const targetWorkspaceId = binding?.workspaceId ?? state.activeWorkspaceId
+      const targetAgentType = binding?.agentType ?? state.activeAgentType
+
       const logEntry = {
         ...entry,
         id: Date.now() + Math.random(),
-        processId: state.activeProcessId ?? "",
-        sequence: state.logs.length,
+        processId,
+        sequence:
+          targetWorkspaceId &&
+          (targetWorkspaceId !== state.activeWorkspaceId ||
+            targetAgentType !== state.activeAgentType)
+            ? (
+                state._workspaceCache[
+                  `${targetWorkspaceId}::${targetAgentType ?? "unknown"}`
+                ]?.logs.length ?? 0
+              )
+            : state.logs.length,
       }
-      state.appendLog(logEntry)
+      state.appendLogToWorkspace(targetWorkspaceId, targetAgentType, logEntry)
     },
     (processId: string) => {
       const state = useAgentStore.getState()
       const binding = getProcessBinding(processId)
       const targetSessionId = binding?.sessionId ?? state.activeSessionId
       const targetWorkspaceId = binding?.workspaceId ?? state.activeWorkspaceId
+      const targetAgentType = binding?.agentType ?? state.activeAgentType
 
       if (processId === state.activeProcessId && state.status === "running") {
         state.setStatus("completed")
         state.setActiveProcess(null)
       }
+      state.setWorkspaceRuntime(targetWorkspaceId, targetAgentType, {
+        status: "completed",
+        activeProcessId: null,
+      })
 
       if (targetSessionId) {
         sessionsApi
@@ -134,14 +162,21 @@ function registerCallbacksOnce() {
         workspacesApi
           .get(targetWorkspaceId)
           .then((workspace) => {
-            if (workspace?.status === "running") {
-              return workspacesApi.updateStatus(
-                targetWorkspaceId,
-                "need_review"
-              )
+            const nextStatus = workspace?.status === "done" ? "done" : "need_review"
+            emitWorkspaceStatusChanged({
+              workspaceId: targetWorkspaceId,
+              status: nextStatus,
+              updatedAt: Date.now(),
+            })
+            if (workspace?.status !== nextStatus) {
+              return workspacesApi.updateStatus(targetWorkspaceId, nextStatus)
             }
+            return undefined
           })
           .catch(console.error)
+
+        // Mark workspace as needing history reload in case user was away during agent execution
+        state.markHistoryReloadNeeded(targetWorkspaceId, targetAgentType)
       }
 
       removeProcessBinding(processId)
@@ -184,7 +219,6 @@ export function useAgent() {
     if (session) {
       useAgentStore.getState().setActiveSession(sessionId)
       useAgentStore.getState().loadSession(session)
-      useAgentStore.getState().setStatus("idle")
     }
     return session
   }, [])
@@ -192,20 +226,25 @@ export function useAgent() {
   const startAgent = async (
     workingDir: string,
     prompt: string,
-    agentType?: AgentType
+    options?: {
+      agentType?: AgentType
+      claudePermissionMode?: ClaudePermissionMode
+    }
   ) => {
     const processId = crypto.randomUUID()
-    const type = agentType ?? store.activeAgentType ?? "claude_code"
+    const type = options?.agentType ?? store.activeAgentType ?? "claude_code"
 
     console.log("[DEBUG] startAgent called with workingDir:", workingDir)
 
     const currentState = useAgentStore.getState()
+    const targetWorkspaceId = currentState.activeWorkspaceId
+    const targetSessionId = currentState.activeSessionId
 
     // Determine if this is a continuation (has previous logs = previous conversation exists)
     const hasPreviousConversation = currentState.logs.length > 0
 
     // Append user message as a log entry (preserves multi-turn history)
-    currentState.appendLog({
+    const userLogEntry = {
       id: Date.now(),
       processId,
       entryType: "text",
@@ -214,19 +253,36 @@ export function useAgent() {
       filePath: null,
       timestamp: new Date().toISOString(),
       sequence: currentState.logs.length,
-    })
+    } satisfies AgentLogEntry
+
+    if (targetWorkspaceId) {
+      currentState.appendLogToWorkspace(targetWorkspaceId, type, userLogEntry)
+    } else {
+      currentState.appendLog(userLogEntry)
+    }
 
     useAgentStore.setState({
+      activeAgentType: type,
       userPrompt: prompt,
       activeProcessId: processId,
       status: "running",
     })
 
-    const latestState = useAgentStore.getState()
     setProcessBinding(processId, {
-      sessionId: latestState.activeSessionId,
-      workspaceId: latestState.activeWorkspaceId,
+      sessionId: targetSessionId,
+      workspaceId: targetWorkspaceId,
+      agentType: type,
     })
+    useAgentStore.getState().setWorkspaceRuntime(
+      targetWorkspaceId,
+      type,
+      {
+        activeProcessId: processId,
+        activeSessionId: targetSessionId,
+        userPrompt: prompt,
+        status: "running",
+      }
+    )
 
     try {
       await invoke("start_agent", {
@@ -235,6 +291,8 @@ export function useAgent() {
         workingDir,
         prompt,
         continueSession: hasPreviousConversation,
+        permissionMode:
+          type === "claude_code" ? options?.claudePermissionMode ?? "default" : null,
       })
 
       const runningState = useAgentStore.getState()
@@ -245,6 +303,11 @@ export function useAgent() {
 
       // Update workspace status to running
       if (runningState.activeWorkspaceId) {
+        emitWorkspaceStatusChanged({
+          workspaceId: runningState.activeWorkspaceId,
+          status: "running",
+          updatedAt: Date.now(),
+        })
         await workspacesApi
           .updateStatus(runningState.activeWorkspaceId, "running")
           .catch(console.error)
@@ -252,7 +315,15 @@ export function useAgent() {
     } catch (err) {
       removeProcessBinding(processId)
       useAgentStore.setState({ status: "failed" })
-      useAgentStore.getState().appendLog({
+      useAgentStore.getState().setWorkspaceRuntime(
+        targetWorkspaceId,
+        type,
+        {
+          status: "failed",
+          activeProcessId: null,
+        }
+      )
+      const errorLogEntry = {
         id: Date.now(),
         processId,
         entryType: "error",
@@ -261,7 +332,15 @@ export function useAgent() {
         filePath: null,
         timestamp: new Date().toISOString(),
         sequence: 0,
-      })
+      } satisfies AgentLogEntry
+
+      if (targetWorkspaceId) {
+        useAgentStore
+          .getState()
+          .appendLogToWorkspace(targetWorkspaceId, type, errorLogEntry)
+      } else {
+        useAgentStore.getState().appendLog(errorLogEntry)
+      }
       throw err
     }
   }
@@ -273,6 +352,22 @@ export function useAgent() {
       const binding = getProcessBinding(processId)
       await invoke("stop_agent", { processId })
       useAgentStore.setState({ status: "killed", activeProcessId: null })
+      useAgentStore.getState().setWorkspaceRuntime(
+        binding?.workspaceId ?? store.activeWorkspaceId,
+        binding?.agentType ?? store.activeAgentType,
+        {
+          status: "killed",
+          activeProcessId: null,
+        }
+      )
+      const targetWorkspaceId = binding?.workspaceId ?? store.activeWorkspaceId
+      if (targetWorkspaceId) {
+        emitWorkspaceStatusChanged({
+          workspaceId: targetWorkspaceId,
+          status: "need_review",
+          updatedAt: Date.now(),
+        })
+      }
       if (binding?.sessionId ?? store.activeSessionId) {
         await sessionsApi.updateStatus(
           binding?.sessionId ?? store.activeSessionId!,

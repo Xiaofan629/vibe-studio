@@ -1,6 +1,10 @@
 use crate::{AgentLogEntry, AgentLogEntryType};
 use serde_json::Value;
 
+fn is_placeholder_text(text: &str) -> bool {
+    matches!(text.trim(), "" | "undefined" | "null")
+}
+
 /// Parse Claude Code stream-json output line
 ///
 /// Handles message types:
@@ -11,7 +15,7 @@ use serde_json::Value;
 pub fn parse_line(line: &str) -> Vec<AgentLogEntry> {
     let Ok(json) = serde_json::from_str::<Value>(line) else {
         // Non-JSON lines are emitted as plain text
-        if !line.trim().is_empty() {
+        if !is_placeholder_text(line) {
             return vec![AgentLogEntry {
                 entry_type: AgentLogEntryType::Text,
                 content: line.to_string(),
@@ -93,7 +97,7 @@ pub fn parse_line(line: &str) -> Vec<AgentLogEntry> {
                     match block_type {
                         "text" => {
                             if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                if !text.trim().is_empty() {
+                                if !is_placeholder_text(text) {
                                     entries.push(AgentLogEntry {
                                         entry_type: AgentLogEntryType::Text,
                                         content: text.to_string(),
