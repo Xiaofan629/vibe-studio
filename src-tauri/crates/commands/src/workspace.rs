@@ -54,6 +54,79 @@ fn repo_name_from_path(path: &str) -> String {
         .to_string()
 }
 
+fn refresh_remote_branch(
+    repo_path: &std::path::Path,
+    target_branch: &str,
+) -> std::result::Result<(), String> {
+    let remote_branch = target_branch
+        .strip_prefix("origin/")
+        .ok_or_else(|| format!("Unsupported remote branch reference: {}", target_branch))?;
+    let refspec = format!(
+        "refs/heads/{}:refs/remotes/origin/{}",
+        remote_branch, remote_branch
+    );
+
+    vibe_studio_git::cli::run_git(repo_path, &["fetch", "--prune", "origin", &refspec])
+        .map_err(|e| format!("Failed to fetch latest code for {}: {}", target_branch, e))?;
+
+    Ok(())
+}
+
+fn resolve_base_commit(
+    repo_path: &std::path::Path,
+    target_branch: &str,
+) -> std::result::Result<String, String> {
+    if target_branch.starts_with("origin/") {
+        refresh_remote_branch(repo_path, target_branch)?;
+    }
+
+    vibe_studio_git::cli::run_git(repo_path, &["rev-parse", target_branch])
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("Failed to resolve base commit for {}: {}", target_branch, e))
+}
+
+fn create_isolated_worktree(
+    repo_path: &std::path::Path,
+    target_branch: &str,
+    branch_name: &str,
+    worktree_dir: &std::path::Path,
+) -> std::result::Result<String, String> {
+    match vibe_studio_git::cli::run_git(
+        repo_path,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            &worktree_dir.to_string_lossy(),
+            target_branch,
+        ],
+    ) {
+        Ok(_) => Ok(worktree_dir.to_string_lossy().to_string()),
+        Err(e) => {
+            eprintln!(
+                "Git worktree add returned error for {}: {}",
+                repo_path.display(),
+                e
+            );
+            if worktree_dir.exists() {
+                eprintln!(
+                    "Worktree directory exists, using it anyway: {:?}",
+                    worktree_dir
+                );
+                Ok(worktree_dir.to_string_lossy().to_string())
+            } else {
+                Err(format!(
+                    "Failed to create worktree from {} in {}: {}",
+                    target_branch,
+                    repo_path.display(),
+                    e
+                ))
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn create_workspace(
     app: AppHandle,
@@ -100,62 +173,17 @@ pub async fn create_workspace(
 
     let branch_name = format!("vibe-studio/{}-{}", date_str, random_id);
     let worktree_dir = worktrees_base.join(&first_repo_name);
-    let first_repo_uses_local_project = first_repo.use_local_project.unwrap_or(false);
-
     // Get base commit from the user-selected branch
-    let base_commit =
-        vibe_studio_git::cli::run_git(first_repo_path, &["rev-parse", &first_repo.branch])
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+    let first_base_commit = resolve_base_commit(first_repo_path, &first_repo.branch)?;
 
     // Create git worktree from the user-selected branch
-    // First, ensure we have a local reference to the target branch
     let target_branch = &first_repo.branch;
-
-    // For local project mode, keep operating in the original repo path so the
-    // existing branch/PR state remains intact.
-    let worktree_path_str = if first_repo_uses_local_project {
-        None
-    } else if target_branch.starts_with("origin/") {
-        // Check if this is a remote branch (starts with "origin/")
-        // For remote branches, create worktree directly from the remote branch
-        match vibe_studio_git::cli::run_git(
-            first_repo_path,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                &branch_name,
-                &worktree_dir.to_string_lossy(),
-                target_branch,
-            ],
-        ) {
-            Ok(_) => Some(worktree_dir.to_string_lossy().to_string()),
-            Err(e) => {
-                eprintln!("Failed to create worktree for {}: {}", first_repo.path, e);
-                None
-            }
-        }
-    } else {
-        // For local branches, create worktree from the local branch
-        match vibe_studio_git::cli::run_git(
-            first_repo_path,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                &branch_name,
-                &worktree_dir.to_string_lossy(),
-                target_branch,
-            ],
-        ) {
-            Ok(_) => Some(worktree_dir.to_string_lossy().to_string()),
-            Err(e) => {
-                eprintln!("Failed to create worktree for {}: {}", first_repo.path, e);
-                None
-            }
-        }
-    };
+    let first_worktree_path_str = Some(create_isolated_worktree(
+        first_repo_path,
+        target_branch,
+        &branch_name,
+        &worktree_dir,
+    )?);
 
     // Insert workspace with first repo's info
     let ws_model = workspace::ActiveModel {
@@ -165,17 +193,9 @@ pub async fn create_workspace(
         agent_type: Set(request.agent_type.clone()),
         initial_prompt: Set(request.initial_prompt.clone()),
         project_id: Set(first_project_id.clone()),
-        branch: Set(if first_repo_uses_local_project {
-            first_repo.branch.clone()
-        } else {
-            branch_name.clone()
-        }),
-        worktree_path: Set(worktree_path_str.clone()),
-        base_commit: Set(if base_commit.is_empty() {
-            None
-        } else {
-            Some(base_commit.clone())
-        }),
+        branch: Set(branch_name.clone()),
+        worktree_path: Set(first_worktree_path_str.clone()),
+        base_commit: Set(Some(first_base_commit.clone())),
         created_at: Set(now.clone()),
         updated_at: Set(now.clone()),
         deleted_at: Set(None),
@@ -191,7 +211,6 @@ pub async fn create_workspace(
         let repo_id = uuid::Uuid::new_v4().to_string();
         let repo_name = repo_name_from_path(&repo_req.path);
         let repo_path = std::path::Path::new(&repo_req.path);
-        let use_local_project = repo_req.use_local_project.unwrap_or(false);
 
         // Ensure project exists in DB
         let project_id = ensure_project(&state, &repo_req.path, &repo_name, &now).await?;
@@ -205,82 +224,17 @@ pub async fn create_workspace(
 
         let worktree_dir = worktrees_base.join(&repo_name);
 
-        // Get base commit from the user-selected branch
-        let base_commit =
-            vibe_studio_git::cli::run_git(repo_path, &["rev-parse", &repo_req.branch])
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default();
-
-        // Create git worktree from the user-selected branch
-        let target_branch = &repo_req.branch;
-
-        let worktree_path_str = if use_local_project {
-            None
-        } else if target_branch.starts_with("origin/") {
-            // Check if this is a remote branch (starts with "origin/")
-            // For remote branches, create worktree directly from the remote branch
-            match vibe_studio_git::cli::run_git(
-                repo_path,
-                &[
-                    "worktree",
-                    "add",
-                    "-b",
-                    &repo_branch_name,
-                    &worktree_dir.to_string_lossy(),
-                    target_branch,
-                ],
-            ) {
-                Ok(_) => Some(worktree_dir.to_string_lossy().to_string()),
-                Err(e) => {
-                    eprintln!(
-                        "Git worktree add returned error for {}: {}",
-                        repo_req.path, e
-                    );
-                    // Check if worktree directory actually exists (Git may have succeeded despite warning)
-                    if worktree_dir.exists() {
-                        eprintln!(
-                            "Worktree directory exists, using it anyway: {:?}",
-                            worktree_dir
-                        );
-                        Some(worktree_dir.to_string_lossy().to_string())
-                    } else {
-                        eprintln!("Worktree directory does not exist, creation failed");
-                        None
-                    }
-                }
-            }
+        let (base_commit, worktree_path_str) = if idx == 0 {
+            (first_base_commit.clone(), first_worktree_path_str.clone())
         } else {
-            // For local branches, create worktree from the local branch
-            match vibe_studio_git::cli::run_git(
+            let base_commit = resolve_base_commit(repo_path, &repo_req.branch)?;
+            let worktree_path_str = Some(create_isolated_worktree(
                 repo_path,
-                &[
-                    "worktree",
-                    "add",
-                    "-b",
-                    &repo_branch_name,
-                    &worktree_dir.to_string_lossy(),
-                    target_branch,
-                ],
-            ) {
-                Ok(_) => Some(worktree_dir.to_string_lossy().to_string()),
-                Err(e) => {
-                    eprintln!(
-                        "Git worktree add returned error for {}: {}",
-                        repo_req.path, e
-                    );
-                    // Check if worktree directory actually exists (Git may have succeeded despite warning)
-                    if worktree_dir.exists() {
-                        eprintln!(
-                            "Worktree directory exists, using it anyway: {:?}",
-                            worktree_dir
-                        );
-                        Some(worktree_dir.to_string_lossy().to_string())
-                    } else {
-                        eprintln!("Worktree directory does not exist, creation failed");
-                        None
-                    }
-                }
-            }
+                &repo_req.branch,
+                &repo_branch_name,
+                &worktree_dir,
+            )?);
+            (base_commit, worktree_path_str)
         };
 
         // Insert workspace_repo
@@ -289,22 +243,10 @@ pub async fn create_workspace(
             workspace_id: Set(workspace_id.clone()),
             project_id: Set(project_id.clone()),
             path: Set(repo_req.path.clone()),
-            branch: Set(if use_local_project {
-                repo_req.branch.clone()
-            } else {
-                repo_branch_name.clone()
-            }),
-            base_branch: Set(if use_local_project {
-                None
-            } else {
-                Some(repo_req.branch.clone())
-            }),
+            branch: Set(repo_branch_name.clone()),
+            base_branch: Set(Some(repo_req.branch.clone())),
             worktree_path: Set(worktree_path_str.clone()),
-            base_commit: Set(if base_commit.is_empty() {
-                None
-            } else {
-                Some(base_commit.clone())
-            }),
+            base_commit: Set(Some(base_commit.clone())),
             created_at: Set(now.clone()),
         };
         workspace_repo::Entity::insert(wr_model)
@@ -318,22 +260,10 @@ pub async fn create_workspace(
             project_id,
             path: repo_req.path.clone(),
             name: repo_name,
-            branch: if use_local_project {
-                repo_req.branch.clone()
-            } else {
-                repo_branch_name.clone()
-            },
-            base_branch: if use_local_project {
-                None
-            } else {
-                Some(repo_req.branch.clone())
-            },
+            branch: repo_branch_name.clone(),
+            base_branch: Some(repo_req.branch.clone()),
             worktree_path: worktree_path_str,
-            base_commit: if base_commit.is_empty() {
-                None
-            } else {
-                Some(base_commit)
-            },
+            base_commit: Some(base_commit),
         });
     }
 

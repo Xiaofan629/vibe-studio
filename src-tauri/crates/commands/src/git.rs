@@ -259,13 +259,7 @@ pub async fn git_commit_selected(
     // 使用 --whitespace=fix 自动修复换行符问题
     let apply_result = vibe_studio_git::cli::run_git_with_input(
         path,
-        &[
-            "apply",
-            "--cached",
-            "--3way",
-            "--whitespace=fix",
-            "-",
-        ],
+        &["apply", "--cached", "--3way", "--whitespace=fix", "-"],
         &patch,
     );
 
@@ -1012,7 +1006,5 @@ fn extract_json_candidate(text: &str) -> Option<String> {
 // Remove raw control characters that some agents emit inside JSON-like output.
 // Escaped sequences such as "\\n" remain intact because they are ordinary chars.
 fn clean_json_string(json: &str) -> String {
-    json.chars()
-        .filter(|c| (*c as u32) > 0x1F)
-        .collect()
+    json.chars().filter(|c| (*c as u32) > 0x1F).collect()
 }

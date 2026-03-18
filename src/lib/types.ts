@@ -127,6 +127,7 @@ export interface Workspace {
 export interface CreateWorkspaceRepo {
   path: string
   branch: string
+  use_local_project?: boolean
 }
 
 export interface CreateWorkspaceRequest {

@@ -353,7 +353,11 @@ export function AgentChat({
             const isActiveContext =
               workspaceId === storeState.activeWorkspaceId &&
               agentType === storeState.activeAgentType
-            const liveLogs = isActiveContext
+            const shouldMergeLiveLogs =
+              isActiveContext &&
+              storeState.status === "running" &&
+              !!storeState.activeProcessId
+            const liveLogs = shouldMergeLiveLogs
               ? storeState.logs.filter(
                   (entry) => entry.processId !== `${agentType}-history`
                 )
