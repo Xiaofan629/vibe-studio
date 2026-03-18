@@ -98,6 +98,7 @@ export default function ProjectPage() {
   const [activeRepoId, setActiveRepoId] = useState<string | null>(null)
   const [initialPrompt, setInitialPrompt] = useState<string | null>(null)
   const [prInfo, setPrInfo] = useState<PrInfo | null | undefined>(undefined)
+  const [prBranch, setPrBranch] = useState<string | null>(null)
   const [showCreatePR, setShowCreatePR] = useState(false)
   const [showCommitDialog, setShowCommitDialog] = useState(false)
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0)
@@ -397,10 +398,12 @@ export default function ProjectPage() {
   const loadPrInfo = useCallback(() => {
     if (!workDir || !headBranch) {
       setPrInfo(undefined)
+      setPrBranch(null)
       return
     }
 
     setPrInfo(undefined)
+    setPrBranch(null)
 
     const prLookupBranches = [
       headBranch,
@@ -416,11 +419,20 @@ export default function ProjectPage() {
         invoke<PrInfo | null>("git_get_pr_info", {
           repoPath: workDir,
           branch,
-        }).catch(() => null)
+        })
+          .then((info) => ({ branch, info }))
+          .catch(() => ({ branch, info: null as PrInfo | null }))
       )
     )
-      .then((infos) => setPrInfo(infos.find((info) => info) ?? null))
-      .catch(() => setPrInfo(null))
+      .then((infos) => {
+        const matched = infos.find((entry) => entry.info)
+        setPrInfo(matched?.info ?? null)
+        setPrBranch(matched?.branch ?? null)
+      })
+      .catch(() => {
+        setPrInfo(null)
+        setPrBranch(null)
+      })
   }, [headBranch, reviewBaseBranch, workDir])
 
   // Load PR info when repo changes
@@ -903,6 +915,9 @@ export default function ProjectPage() {
       {showCommitDialog && workDir && (
         <CommitFlowDialog
           repoPath={workDir}
+          headBranch={headBranch}
+          prInfo={prInfo ?? null}
+          prBranch={prBranch}
           agentType={selectedAgent}
           workspaceTitle={currentWorkspace?.title ?? null}
           workspacePrompt={currentWorkspace?.initial_prompt ?? null}

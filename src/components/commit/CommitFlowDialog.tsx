@@ -23,6 +23,9 @@ import {
 
 interface CommitFlowDialogProps {
   repoPath: string
+  headBranch?: string | null
+  prInfo?: PrInfo | null
+  prBranch?: string | null
   agentType?: AgentType
   workspaceTitle?: string | null
   workspacePrompt?: string | null
@@ -284,6 +287,9 @@ function buildPatch(
 
 export function CommitFlowDialog({
   repoPath,
+  headBranch,
+  prInfo,
+  prBranch,
   agentType,
   workspaceTitle,
   workspacePrompt,
@@ -317,23 +323,8 @@ export function CommitFlowDialog({
   const [loadingDiff, setLoadingDiff] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const [prInfo, setPrInfo] = useState<PrInfo | null | undefined>(undefined)
   const [rawPatch, setRawPatch] = useState("")
-
-  // 加载 PR 信息
-  useEffect(() => {
-    const loadPrInfo = async () => {
-      try {
-        const info = await invoke<PrInfo | null>("git_get_pr_info", {
-          repoPath,
-        })
-        setPrInfo(info)
-      } catch {
-        setPrInfo(null)
-      }
-    }
-    loadPrInfo()
-  }, [repoPath])
+  const pushTargetBranch = prBranch ?? null
 
   useEffect(() => {
     setLoadingDiff(true)
@@ -510,7 +501,7 @@ export function CommitFlowDialog({
       const message = commitBody.trim()
         ? `${commitTitle.trim()}\n\n${commitBody.trim()}`
         : commitTitle.trim()
-      await commitSelectedAndPush(message, selectedPatch)
+      await commitSelectedAndPush(message, selectedPatch, pushTargetBranch)
       onCommitted?.()
       onClose()
     } catch (err) {
@@ -770,13 +761,18 @@ export function CommitFlowDialog({
                   )}
                   提交
                 </button>
-                {prInfo && (
+                {prInfo && pushTargetBranch && (
                   <button
                     onClick={() => void handleCommitAndPush()}
                     disabled={
                       loading || !commitTitle.trim() || !selectedPatch.trim()
                     }
                     className="flex items-center gap-2 rounded-md border border-input px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                    title={
+                      headBranch && pushTargetBranch !== headBranch
+                        ? `推送到远端分支 ${pushTargetBranch}`
+                        : undefined
+                    }
                   >
                     {loading ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />

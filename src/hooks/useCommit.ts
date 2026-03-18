@@ -128,18 +128,21 @@ export function useCommit(repoPath: string | null, options: UseCommitOptions = {
     [repoPath]
   )
 
-  const push = useCallback(async () => {
+  const push = useCallback(async (targetBranch?: string | null) => {
     if (!repoPath) throw new Error("No repo path")
     setLoading(true)
     try {
-      await invoke("git_push", { repoPath })
+      await invoke("git_push", {
+        repoPath,
+        targetBranch: targetBranch ?? null,
+      })
     } finally {
       setLoading(false)
     }
   }, [repoPath])
 
   const commitSelectedAndPush = useCallback(
-    async (message: string, patch: string) => {
+    async (message: string, patch: string, targetBranch?: string | null) => {
       if (!repoPath) throw new Error("No repo path")
       setLoading(true)
       try {
@@ -148,7 +151,10 @@ export function useCommit(repoPath: string | null, options: UseCommitOptions = {
           { repoPath, message, patch }
         )
         // Commit 成功后 push
-        await invoke("git_push", { repoPath })
+        await invoke("git_push", {
+          repoPath,
+          targetBranch: targetBranch ?? null,
+        })
         return result
       } finally {
         setLoading(false)

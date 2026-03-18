@@ -304,9 +304,23 @@ pub async fn git_commit_selected(
 }
 
 #[tauri::command]
-pub async fn git_push(repo_path: String) -> std::result::Result<(), String> {
+pub async fn git_push(
+    repo_path: String,
+    target_branch: Option<String>,
+) -> std::result::Result<(), String> {
     let path = std::path::Path::new(&repo_path);
-    vibe_studio_git::cli::run_git(path, &["push"]).map_err(|e| e.to_string())?;
+    if let Some(branch) = target_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+    {
+        let branch = branch.strip_prefix("origin/").unwrap_or(branch);
+        let refspec = format!("HEAD:{}", branch);
+        vibe_studio_git::cli::run_git(path, &["push", "-u", "origin", &refspec])
+            .map_err(|e| e.to_string())?;
+    } else {
+        vibe_studio_git::cli::run_git(path, &["push"]).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
