@@ -147,7 +147,7 @@ export function AgentChat({
 }: AgentChatProps) {
   const { logs, status, activeSessionId, sessionStats } = useAgentStore()
   const { startAgent, stopAgent, createSession, loadSession } = useAgent()
-  const { unresolvedCount, buildReviewContext } = useReview()
+  const { unresolvedCount, buildReviewContext, loadComments } = useReview()
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const initialPromptSentRef = useRef(false)
@@ -427,6 +427,16 @@ export function AgentChat({
     }
   }, [sessionId, activeSessionId, loadSession])
 
+  // Load comments when session changes
+  useEffect(() => {
+    const currentSessionId = sessionId ?? activeSessionId
+    if (currentSessionId) {
+      loadComments(currentSessionId).catch(() => {
+        // Ignore errors when loading comments
+      })
+    }
+  }, [sessionId, activeSessionId, loadComments])
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [logs.length])
@@ -487,21 +497,38 @@ export function AgentChat({
     try {
       setUiError(null)
 
-      if (!activeSessionId) {
-        await createSession({
+      // Use sessionId prop if provided, otherwise use activeSessionId from store
+      // This ensures we use the correct session ID even when loadSession is still pending
+      let currentSessionId = sessionId ?? activeSessionId
+
+      // If no session exists, create one
+      if (!currentSessionId) {
+        const session = await createSession({
           project_id: projectId,
           branch,
           agent_type: agentType,
           title: message.slice(0, 50),
           workspace_id: workspaceId,
         })
+        currentSessionId = session.id
       }
 
       // Only inject review context if we have an active session AND unresolved comments
       // This prevents injecting comments from previous workspaces when creating a new one
       let finalPrompt = message
-      if (activeSessionId && unresolvedCount > 0) {
-        const reviewContext = await buildReviewContext(activeSessionId)
+
+      // Debug logging
+      console.log("[AgentChat] handleSend:", {
+        sessionId,
+        activeSessionId,
+        currentSessionId,
+        unresolvedCount,
+        commentsFromStore: useReviewStore.getState().comments.length,
+      })
+
+      if (currentSessionId && unresolvedCount > 0) {
+        const reviewContext = await buildReviewContext(currentSessionId)
+        console.log("[AgentChat] reviewContext:", reviewContext)
         if (reviewContext) {
           finalPrompt = `${reviewContext}\n\n---\n\n${message}`
         }

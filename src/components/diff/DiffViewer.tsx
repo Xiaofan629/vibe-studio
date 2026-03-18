@@ -1,9 +1,9 @@
 "use client"
 
-import { useMemo, useCallback, useEffect, useRef, useState } from "react"
+import { useMemo, useCallback, useEffect, useRef, useState, startTransition } from "react"
 import { useTheme } from "next-themes"
 import { FileDiff } from "@pierre/diffs/react"
-import { Copy, Check } from "lucide-react"
+import { Copy, Check, Highlighter } from "lucide-react"
 import type {
   DiffLineAnnotation,
   AnnotationSide,
@@ -78,6 +78,11 @@ type ViewerAnnotation =
 interface DiffFileContentsResponse {
   old_contents: string
   new_contents: string
+}
+
+function normalizeText(text: string | null | undefined): string {
+  if (!text) return ""
+  return text.replace(/\r\n/g, "\n")
 }
 
 function toAnnotationSide(side: "old" | "new"): AnnotationSide {
@@ -319,7 +324,8 @@ function buildDisplayMetadata(
   file: DiffFile,
   contents: FileContentPair,
   annotations: DiffLineAnnotation<ViewerAnnotation>[],
-  contextRadius = 3
+  contextRadius = 3,
+  enableHighlight = true
 ): FileDiffMetadata | null {
   const oldLines = splitLinesPreserveNewline(contents.oldFile.contents)
   const newLines = splitLinesPreserveNewline(contents.newFile.contents)
@@ -365,12 +371,23 @@ function buildDisplayMetadata(
 
   metadata.name = newName
   metadata.prevName = oldName !== newName ? oldName : undefined
-  metadata.lang = contents.newFile.lang ?? contents.oldFile.lang
+  metadata.lang = enableHighlight ? (contents.newFile.lang ?? contents.oldFile.lang) : "text"
   metadata.type = toChangeType(file)
   metadata.oldLines = oldLines
   metadata.newLines = newLines
 
   return metadata
+}
+
+// 统一的代码骨架屏占位，用于掩盖异步加载和滚动的 1 帧延迟
+function CodeSkeleton() {
+  return (
+    <div className="flex animate-pulse flex-col gap-3 p-6 min-h-[120px]">
+      <div className="h-4 w-1/3 rounded-md bg-muted/50"></div>
+      <div className="h-4 w-1/2 rounded-md bg-muted/50"></div>
+      <div className="h-4 w-1/4 rounded-md bg-muted/50"></div>
+    </div>
+  )
 }
 
 export function DiffViewer({
@@ -394,91 +411,135 @@ export function DiffViewer({
   const { viewMode, wrapText } = useDiffViewStore()
   const { resolvedTheme } = useTheme()
   const fileRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const [contentsByPath, setContentsByPath] = useState<
-    Record<string, FileContentPair>
-  >({})
-  const [visibleFiles, setVisibleFiles] = useState<Set<string>>(new Set())
+  
+  const [contentsByPath, setContentsByPath] = useState<Record<string, FileContentPair>>({})
+  
+  // ====================== 关键修复：默认让前 5 个文件可见 ======================
+  // 避免进入页面或初期滑动时白屏闪烁
+  const [visibleFiles, setVisibleFiles] = useState<Set<string>>(() => {
+    return new Set(files.slice(0, 5).map(getFilePath))
+  })
+  
   const [copiedFile, setCopiedFile] = useState<string | null>(null)
 
+  const defaultHighlightEnabled = files.length <= 20
+  const [highlightOverrides, setHighlightOverrides] = useState<Record<string, boolean>>({})
+
+  const isHighlighted = useCallback((filePath: string) => {
+    return highlightOverrides[filePath] ?? defaultHighlightEnabled
+  }, [highlightOverrides, defaultHighlightEnabled])
+
+  const toggleHighlight = useCallback((filePath: string) => {
+    setHighlightOverrides((prev) => ({
+      ...prev,
+      [filePath]: !(prev[filePath] ?? defaultHighlightEnabled)
+    }))
+  }, [defaultHighlightEnabled])
+
+  const handleScroll = useCallback(() => {
+    window.dispatchEvent(new Event("scroll"))
+  }, [])
+
   useEffect(() => {
-    const observers = new Map<string, IntersectionObserver>()
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const newlyVisible: string[] = []
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const filePath = entry.target.getAttribute("data-filepath")
+            if (filePath) newlyVisible.push(filePath)
+          }
+        })
+
+        if (newlyVisible.length > 0) {
+          startTransition(() => {
+            setVisibleFiles((prev) => {
+              const next = new Set(prev)
+              let changed = false
+              newlyVisible.forEach((fp) => {
+                if (!next.has(fp)) {
+                  next.add(fp)
+                  changed = true
+                }
+              })
+              return changed ? next : prev
+            })
+          })
+        }
+      },
+      { rootMargin: "4000px" }
+    )
 
     files.forEach((file) => {
       const filePath = getFilePath(file)
       const element = fileRefs.current[filePath]
-
-      if (!element) return
-
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              setVisibleFiles((prev) => new Set(prev).add(filePath))
-            }
-          })
-        },
-        { rootMargin: "200px" }
-      )
-
-      observer.observe(element)
-      observers.set(filePath, observer)
+      if (element) {
+        element.setAttribute("data-filepath", filePath)
+        observer.observe(element)
+      }
     })
 
     return () => {
-      observers.forEach((observer) => observer.disconnect())
+      observer.disconnect()
     }
   }, [files])
 
   useEffect(() => {
     let cancelled = false
+    let timer: NodeJS.Timeout
 
-    async function loadContents() {
-      const visibleFilePaths = Array.from(visibleFiles)
-      if (visibleFilePaths.length === 0) return
+    async function loadContentsQueue() {
+      const allPaths = files.map(getFilePath)
+      const missingPaths = allPaths.filter(fp => !contentsByPath[fp])
+      
+      if (missingPaths.length === 0) return
+
+      missingPaths.sort((a, b) => {
+        const aVis = visibleFiles.has(a) ? -1 : 1
+        const bVis = visibleFiles.has(b) ? -1 : 1
+        return aVis - bVis
+      })
+
+      const batch = missingPaths.slice(0, 3)
 
       const entries = await Promise.all(
-        visibleFilePaths
-          .filter((filePath) => !contentsByPath[filePath])
-          .map(async (filePath) => {
-            const file = files.find((f) => getFilePath(f) === filePath)
-            if (!file) return null
+        batch.map(async (filePath) => {
+          const file = files.find((f) => getFilePath(f) === filePath)
+          if (!file) return null
 
-            const response = await invoke<DiffFileContentsResponse>(
-              "git_diff_file_contents",
-              {
-                repoPath,
-                oldPath: file.oldPath,
-                newPath: file.newPath,
-                baseBranch: baseBranch ?? null,
-                oldRevision: oldRevision ?? null,
-                newRevision: newRevision ?? null,
-              }
-            ).catch(() => ({ old_contents: "", new_contents: "" }))
+          const response = await invoke<DiffFileContentsResponse>(
+            "git_diff_file_contents",
+            {
+              repoPath,
+              oldPath: file.oldPath,
+              newPath: file.newPath,
+              baseBranch: baseBranch ?? null,
+              oldRevision: oldRevision ?? null,
+              newRevision: newRevision ?? null,
+            }
+          ).catch(() => ({ old_contents: "", new_contents: "" }))
 
-            const lang = getFileLanguage(filePath)
-            return [
-              filePath,
-              {
-                oldFile: {
-                  name: file.oldPath ?? filePath,
-                  contents: response.old_contents,
-                  lang,
-                },
-                newFile: {
-                  name: file.newPath ?? filePath,
-                  contents: response.new_contents,
-                  lang,
-                },
+          const lang = getFileLanguage(filePath)
+          return [
+            filePath,
+            {
+              oldFile: {
+                name: file.oldPath ?? filePath,
+                contents: normalizeText(response.old_contents),
+                lang,
               },
-            ] as const
-          })
+              newFile: {
+                name: file.newPath ?? filePath,
+                contents: normalizeText(response.new_contents),
+                lang,
+              },
+            },
+          ] as const
+        })
       )
 
       if (!cancelled) {
-        const validEntries = entries.filter((e) => e !== null) as [
-          string,
-          FileContentPair,
-        ][]
+        const validEntries = entries.filter((e) => e !== null) as [string, FileContentPair][]
         if (validEntries.length > 0) {
           setContentsByPath((prev) => ({
             ...prev,
@@ -488,22 +549,15 @@ export function DiffViewer({
       }
     }
 
-    if (visibleFiles.size > 0 && repoPath) {
-      void loadContents()
-    }
+    timer = setTimeout(() => {
+      if (!cancelled) loadContentsQueue()
+    }, 100)
 
     return () => {
       cancelled = true
+      clearTimeout(timer)
     }
-  }, [
-    visibleFiles,
-    files,
-    repoPath,
-    baseBranch,
-    oldRevision,
-    newRevision,
-    contentsByPath,
-  ])
+  }, [files, repoPath, baseBranch, oldRevision, newRevision, visibleFiles, contentsByPath])
 
   useEffect(() => {
     if (!selectedFile) return
@@ -534,16 +588,11 @@ export function DiffViewer({
   const getLineAnnotations = useCallback(
     (filePath: string): DiffLineAnnotation<ViewerAnnotation>[] => {
       const annotations: DiffLineAnnotation<ViewerAnnotation>[] = comments
-        .filter(
-          (comment) => !comment.isResolved && comment.filePath === filePath
-        )
+        .filter((comment) => !comment.isResolved && comment.filePath === filePath)
         .map((comment) => ({
           side: toAnnotationSide(comment.side),
           lineNumber: comment.lineNumber,
-          metadata: {
-            type: "comment" as const,
-            comment,
-          },
+          metadata: { type: "comment" as const, comment },
         }))
 
       if (commentingAt && commentingAt.filePath === filePath) {
@@ -558,23 +607,15 @@ export function DiffViewer({
           },
         })
       }
-
       return annotations
     },
     [comments, commentingAt]
   )
 
   const handleLineClick = useCallback(
-    (
-      filePath: string,
-      props: { lineNumber: number; annotationSide: AnnotationSide }
-    ) => {
+    (filePath: string, props: { lineNumber: number; annotationSide: AnnotationSide }) => {
       if (!onLineClick) return
-      onLineClick(
-        filePath,
-        props.lineNumber,
-        fromAnnotationSide(props.annotationSide)
-      )
+      onLineClick(filePath, props.lineNumber, fromAnnotationSide(props.annotationSide))
     },
     [onLineClick]
   )
@@ -590,9 +631,7 @@ export function DiffViewer({
       }
 
       try {
-        // Copy the new file content (after changes)
         const fileContent = contentPair.newFile.contents
-
         if (!fileContent || fileContent.trim() === "") {
           toast.error("文件内容为空")
           return
@@ -602,7 +641,6 @@ export function DiffViewer({
         setCopiedFile(filePath)
         toast.success(`已复制 ${filePath} 的完整内容`)
 
-        // Reset copied state after 2 seconds
         setTimeout(() => setCopiedFile(null), 2000)
       } catch (err) {
         console.error("Failed to copy:", err)
@@ -621,7 +659,10 @@ export function DiffViewer({
   }
 
   return (
-    <div className="review-diff-viewer h-full overflow-y-auto overflow-x-hidden">
+    <div 
+      className="review-diff-viewer h-full overflow-y-auto overflow-x-hidden transform-gpu"
+      onScroll={handleScroll}
+    >
       <div className="space-y-4 p-4">
         {files.map((file) => {
           const filePath = getFilePath(file)
@@ -629,9 +670,11 @@ export function DiffViewer({
           const isSelected = selectedFile === filePath
           const isVisible = visibleFiles.has(filePath)
           const lineAnnotations = getLineAnnotations(filePath)
+          const highlightEnabled = isHighlighted(filePath)
+
           const fileDiff =
             contentPair && !file.isBinary && !file.contentOmitted
-              ? buildDisplayMetadata(file, contentPair, lineAnnotations)
+              ? buildDisplayMetadata(file, contentPair, lineAnnotations, 3, highlightEnabled)
               : null
 
           return (
@@ -647,29 +690,40 @@ export function DiffViewer({
             >
               <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-muted/50 px-4 py-2 backdrop-blur">
                 <span className="text-sm font-mono truncate">{filePath}</span>
-                <button
-                  onClick={() => handleCopyFile(filePath)}
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  title="复制文件完整内容（修改后）"
-                >
-                  {copiedFile === filePath ? (
-                    <>
-                      <Check className="h-3.5 w-3.5 text-green-500" />
-                      <span>已复制</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3.5 w-3.5" />
-                      <span className="hidden sm:inline">复制内容</span>
-                    </>
-                  )}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => toggleHighlight(filePath)}
+                    className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors hover:bg-accent hover:text-foreground ${
+                      highlightEnabled ? "text-foreground font-medium" : "text-muted-foreground"
+                    }`}
+                    title={highlightEnabled ? "关闭语法高亮" : "开启语法高亮"}
+                  >
+                    <Highlighter className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">高亮</span>
+                  </button>
+                  <button
+                    onClick={() => handleCopyFile(filePath)}
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    title="复制文件完整内容（修改后）"
+                  >
+                    {copiedFile === filePath ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-green-500" />
+                        <span>已复制</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">复制内容</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
-              {!isVisible ? (
-                <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
-                  滚动到此处加载...
-                </div>
+              {/* ====================== 关键修复：统一的 Skeleton 骨架屏 ====================== */}
+              {(!isVisible || !contentPair) && !file.isBinary && !file.contentOmitted ? (
+                <CodeSkeleton />
               ) : file.isBinary ? (
                 <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
                   二进制文件暂不支持行内评审。
@@ -678,16 +732,13 @@ export function DiffViewer({
                 <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
                   文件内容过大，当前已省略预览。
                 </div>
-              ) : !contentPair ? (
-                <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
-                  正在加载...
-                </div>
               ) : !fileDiff ? (
                 <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
                   当前没有可展示的 diff 内容。
                 </div>
               ) : (
                 <FileDiff<ViewerAnnotation>
+                  key={`${filePath}-diff-${contentPair.newFile.contents.length}-${highlightEnabled}`}
                   fileDiff={fileDiff}
                   style={{ cursor: "pointer" }}
                   options={{

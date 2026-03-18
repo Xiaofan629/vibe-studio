@@ -465,7 +465,7 @@ export default function ProjectPage() {
     return () => {
       cancelled = true
     }
-  }, [activeSessionId, loadComments, workspaceSessionId])
+  }, [activeSessionId, loadComments, workspaceSessionId, activeTab])
 
   useEffect(() => {
     if (
