@@ -76,6 +76,32 @@ type RawDiffFile = {
   content_omitted?: boolean
 }
 
+// Git 路径解码函数，用于处理中文等非 ASCII 字符
+function unescapeGitFilename(filename: string | null | undefined): string {
+  if (!filename) return ""
+  let cleaned = filename
+  // 去除两端可能由于转义而带上的双引号
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1)
+  }
+  try {
+    // 将八进制转义序列 \xxx 转换为 %XX，供 decodeURIComponent 还原为中文字符
+    const uriEncoded = cleaned.replace(/\\([0-7]{3})/g, (_, octal) => {
+      return '%' + parseInt(octal, 8).toString(16).padStart(2, '0')
+    })
+    // 顺便处理其他常见转义
+    return decodeURIComponent(
+      uriEncoded
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\')
+    )
+  } catch (e) {
+    // 如果解码失败，降级返回原样
+    return cleaned
+  }
+}
+
 const COMMITTED_HEAD = "__branch_head__"
 const WORKSPACE_SNAPSHOT = "__workspace_snapshot__"
 
@@ -162,9 +188,10 @@ export function ReviewPanel({
   const [commitHistory, setCommitHistory] = useState<CommitHistoryEntry[]>([])
   const [files, setFiles] = useState<DiffFile[]>(initialFiles)
   const [rawPatch, setRawPatch] = useState(initialRawPatch)
-  const [selectedFile, setSelectedFile] = useState<string | null>(
-    initialFiles[0]?.newPath ?? initialFiles[0]?.oldPath ?? null
-  )
+  const [selectedFile, setSelectedFile] = useState<string | null>(() => {
+    const initialPath = initialFiles[0]?.newPath ?? initialFiles[0]?.oldPath ?? null
+    return initialPath ? unescapeGitFilename(initialPath) : null
+  })
   const [selectedCommentOnlyFile, setSelectedCommentOnlyFile] = useState<
     string | null
   >(null)
@@ -208,7 +235,7 @@ export function ReviewPanel({
     setFiles(initialFiles)
     setRawPatch(initialRawPatch)
     setSelectedFile(
-      initialFiles[0]?.newPath ?? initialFiles[0]?.oldPath ?? null
+      unescapeGitFilename(initialFiles[0]?.newPath ?? initialFiles[0]?.oldPath ?? null)
     )
     setCommentingAt(null)
     setSelectedCommentOnlyFile(null)
@@ -356,7 +383,8 @@ export function ReviewPanel({
     const counts: Record<string, number> = {}
     for (const comment of comments) {
       if (!comment.isResolved) {
-        counts[comment.filePath] = (counts[comment.filePath] ?? 0) + 1
+        const decodedPath = unescapeGitFilename(comment.filePath)
+        counts[decodedPath] = (counts[decodedPath] ?? 0) + 1
       }
     }
     return counts
@@ -364,7 +392,7 @@ export function ReviewPanel({
 
   const diffFilePaths = useMemo(() => {
     return new Set(
-      files.map((file) => file.newPath ?? file.oldPath ?? "unknown")
+      files.map((file) => unescapeGitFilename(file.newPath ?? file.oldPath ?? "unknown"))
     )
   }, [files])
 
@@ -372,7 +400,8 @@ export function ReviewPanel({
     return Array.from(
       new Set(
         comments
-          .map((comment) => comment.filePath)
+          .filter((comment) => !comment.isResolved)
+          .map((comment) => unescapeGitFilename(comment.filePath))
           .filter((filePath) => filePath && !diffFilePaths.has(filePath))
       )
     ).sort((left, right) => left.localeCompare(right))
@@ -382,7 +411,7 @@ export function ReviewPanel({
     return [...comments]
       .filter((comment) => !comment.isResolved)
       .sort((left, right) => {
-        const pathCompare = left.filePath.localeCompare(right.filePath)
+        const pathCompare = unescapeGitFilename(left.filePath).localeCompare(unescapeGitFilename(right.filePath))
         if (pathCompare !== 0) return pathCompare
         if (left.lineNumber !== right.lineNumber) {
           return left.lineNumber - right.lineNumber
@@ -392,14 +421,14 @@ export function ReviewPanel({
   }, [comments])
 
   useEffect(() => {
-    const firstFile = files[0]?.newPath ?? files[0]?.oldPath ?? null
+    const firstFile = unescapeGitFilename(files[0]?.newPath ?? files[0]?.oldPath ?? null)
     if (!selectedFile) {
       setSelectedFile(firstFile)
       return
     }
 
     const stillExists = files.some(
-      (file) => (file.newPath ?? file.oldPath ?? "unknown") === selectedFile
+      (file) => unescapeGitFilename(file.newPath ?? file.oldPath ?? "unknown") === selectedFile
     )
     if (!stillExists) {
       setSelectedFile(firstFile)
@@ -503,7 +532,7 @@ export function ReviewPanel({
     })),
   ]
   const selectedCommentOnlyFileComments = selectedCommentOnlyFile
-    ? comments.filter((comment) => comment.filePath === selectedCommentOnlyFile)
+    ? comments.filter((comment) => !comment.isResolved && unescapeGitFilename(comment.filePath) === selectedCommentOnlyFile)
     : []
   const totalUnresolvedCount = unresolvedComments.length
 
@@ -517,14 +546,14 @@ export function ReviewPanel({
 
     const targetIsDiffFile = files.some(
       (file) =>
-        (file.newPath ?? file.oldPath ?? "unknown") === targetComment.filePath
+        unescapeGitFilename(file.newPath ?? file.oldPath ?? "unknown") === unescapeGitFilename(targetComment.filePath)
     )
 
     if (targetIsDiffFile) {
       setSelectedCommentOnlyFile(null)
-      setSelectedFile(targetComment.filePath)
+      setSelectedFile(unescapeGitFilename(targetComment.filePath))
     } else {
-      setSelectedCommentOnlyFile(targetComment.filePath)
+      setSelectedCommentOnlyFile(unescapeGitFilename(targetComment.filePath))
     }
     setCommentingAt(null)
     setUnresolvedJumpIndex(

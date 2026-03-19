@@ -49,6 +49,13 @@ const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
 
 const WORKSPACE_AGENT_KEY_PREFIX = "vibe-studio:workspace-agent:"
 
+function normalizeAgentType(value: string): AgentType | null {
+  if (value === "claude_code" || value === "codex" || value === "gemini") {
+    return value
+  }
+  return null
+}
+
 function readStoredWorkspaceAgent(workspaceId: string): AgentType | null {
   if (typeof window === "undefined") {
     return null
@@ -103,6 +110,7 @@ export default function ProjectPage() {
   const [showCommitDialog, setShowCommitDialog] = useState(false)
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0)
   const [prRefreshKey, setPrRefreshKey] = useState(0)
+  const [commitRefreshKey, setCommitRefreshKey] = useState(0)
   const [editorMenuOpen, setEditorMenuOpen] = useState(false)
   const [agentMenuOpen, setAgentMenuOpen] = useState(false)
   const [chatPromptConsumed, setChatPromptConsumed] = useState(false)
@@ -203,13 +211,30 @@ export default function ProjectPage() {
                   workspaceId: ws.id,
                 })
 
-                const latestSession = existingSessions.find(
-                  (session) =>
-                    session.project_id === firstRepo.project_id &&
-                    session.agent_type === restoredAgent
-                )
+                const projectSessions = existingSessions
+                  .filter((session) => session.project_id === firstRepo.project_id)
+                  .sort(
+                    (left, right) =>
+                      new Date(right.updated_at).getTime() -
+                      new Date(left.updated_at).getTime()
+                  )
+
+                const latestSession =
+                  projectSessions.find(
+                    (session) => session.agent_type === restoredAgent
+                  ) ?? projectSessions[0]
 
                 if (latestSession) {
+                  const latestSessionAgent = normalizeAgentType(
+                    latestSession.agent_type
+                  )
+                  if (
+                    latestSessionAgent &&
+                    latestSessionAgent !== restoredAgent
+                  ) {
+                    setSelectedAgent(latestSessionAgent)
+                    persistWorkspaceAgent(ws.id, latestSessionAgent)
+                  }
                   setWorkspaceSessionId(latestSession.id)
                   await loadSession(latestSession.id)
                 } else {
@@ -341,12 +366,26 @@ export default function ProjectPage() {
           return
         }
 
-        const latestSession = existingSessions.find(
-          (session) =>
-            session.project_id === activeRepo.project_id &&
-            session.agent_type === selectedAgent
-        )
+        const projectSessions = existingSessions
+          .filter((session) => session.project_id === activeRepo.project_id)
+          .sort(
+            (left, right) =>
+              new Date(right.updated_at).getTime() -
+              new Date(left.updated_at).getTime()
+          )
+
+        const latestSession =
+          projectSessions.find((session) => session.agent_type === selectedAgent) ??
+          projectSessions[0]
         if (latestSession) {
+          const latestSessionAgent = normalizeAgentType(latestSession.agent_type)
+          if (
+            latestSessionAgent &&
+            latestSessionAgent !== selectedAgent
+          ) {
+            setSelectedAgent(latestSessionAgent)
+            persistWorkspaceAgent(currentWorkspace.id, latestSessionAgent)
+          }
           if (!cancelled) {
             setWorkspaceSessionId(latestSession.id)
           }
@@ -921,8 +960,10 @@ export default function ProjectPage() {
           agentType={selectedAgent}
           workspaceTitle={currentWorkspace?.title ?? null}
           workspacePrompt={currentWorkspace?.initial_prompt ?? null}
+          refreshKey={commitRefreshKey}
           onClose={() => setShowCommitDialog(false)}
           onCommitted={() => {
+            setCommitRefreshKey((current) => current + 1)
             setReviewRefreshKey((current) => current + 1)
             setPrRefreshKey((current) => current + 1)
             loadPrInfo()

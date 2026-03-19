@@ -14,6 +14,7 @@ import type { DiffFile, ReviewComment } from "@/lib/types"
 import { useDiffViewStore } from "@/stores/diffViewStore"
 import { InlineComment } from "@/components/review/InlineComment"
 import { CommentEditor } from "@/components/review/CommentEditor"
+import { DiffErrorBoundary } from "@/components/diff/DiffErrorBoundary"
 import { invoke } from "@/lib/tauri"
 import { toast } from "sonner"
 
@@ -80,6 +81,32 @@ interface DiffFileContentsResponse {
   new_contents: string
 }
 
+// ====================== Git 路径解码函数 ======================
+function unescapeGitFilename(filename: string | null | undefined): string {
+  if (!filename) return ""
+  let cleaned = filename
+  // 去除两端可能由于转义而带上的双引号
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1)
+  }
+  try {
+    // 将八进制转义序列 \xxx 转换为 %XX，供 decodeURIComponent 还原为中文字符
+    const uriEncoded = cleaned.replace(/\\([0-7]{3})/g, (_, octal) => {
+      return '%' + parseInt(octal, 8).toString(16).padStart(2, '0')
+    })
+    // 顺便处理其他常见转义
+    return decodeURIComponent(
+      uriEncoded
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\')
+    )
+  } catch (e) {
+    // 如果解码失败，降级返回原样
+    return cleaned
+  }
+}
+
 function normalizeText(text: string | null | undefined): string {
   if (!text) return ""
   return text.replace(/\r\n/g, "\n")
@@ -93,8 +120,10 @@ function fromAnnotationSide(side: AnnotationSide): "old" | "new" {
   return side === "deletions" ? "old" : "new"
 }
 
+// ====================== 应用解码函数 ======================
 function getFilePath(file: DiffFile): string {
-  return file.newPath ?? file.oldPath ?? "unknown"
+  const rawPath = file.newPath ?? file.oldPath ?? "unknown"
+  return unescapeGitFilename(rawPath)
 }
 
 function getFileLanguage(path: string): FileContents["lang"] {
@@ -126,6 +155,24 @@ function getFileLanguage(path: string): FileContents["lang"] {
     default:
       return "text"
   }
+}
+
+/**
+ * 修复点 1：使用全量检测替代百分比检测
+ * 只要文件包含中文字符，就返回 true。
+ * 避免 Markdown 表格等文件中，因为英文占比较高而漏判。
+ */
+function shouldDisableHighlight(
+  filePath: string,
+  oldContent: string,
+  newContent: string
+): boolean {
+  const chineseRegex = /[\u4e00-\u9fff]/
+  return (
+    chineseRegex.test(filePath) ||
+    chineseRegex.test(oldContent) ||
+    chineseRegex.test(newContent)
+  )
 }
 
 function splitLinesPreserveNewline(contents: string): string[] {
@@ -329,7 +376,30 @@ function buildDisplayMetadata(
 ): FileDiffMetadata | null {
   const oldLines = splitLinesPreserveNewline(contents.oldFile.contents)
   const newLines = splitLinesPreserveNewline(contents.newFile.contents)
-  const { rows, hunkRanges } = buildExpandedRows(file, oldLines, newLines)
+
+  // 对于没有 hunks 的文件（"仅评论"文件），创建一个虚拟的完整文件 diff
+  let fileToProcess = file
+  if (file.hunks.length === 0 && newLines.length > 0) {
+    fileToProcess = {
+      ...file,
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: oldLines.length,
+          newStart: 1,
+          newLines: newLines.length,
+          header: `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
+          lines: [],
+        },
+      ],
+    }
+  }
+
+  if (fileToProcess.hunks.length === 0 && annotations.length === 0) {
+    return null
+  }
+
+  const { rows, hunkRanges } = buildExpandedRows(fileToProcess, oldLines, newLines)
 
   const annotationRanges = annotations
     .map((annotation) => findAnnotatedRowIndex(rows, annotation))
@@ -339,14 +409,14 @@ function buildDisplayMetadata(
       end: Math.min(rows.length - 1, index + contextRadius),
     }))
 
-  const visibleRanges = mergeRanges([...hunkRanges, ...annotationRanges])
+  let visibleRanges = mergeRanges([...hunkRanges, ...annotationRanges])
 
   if (visibleRanges.length === 0) {
     return null
   }
 
-  const oldName = file.oldPath ?? file.newPath ?? contents.oldFile.name
-  const newName = file.newPath ?? file.oldPath ?? contents.newFile.name
+  const oldName = unescapeGitFilename(file.oldPath ?? file.newPath ?? contents.oldFile.name)
+  const newName = unescapeGitFilename(file.newPath ?? file.oldPath ?? contents.newFile.name)
   let patch = `--- a/${oldName}\n+++ b/${newName}\n`
 
   for (const range of visibleRanges) {
@@ -379,7 +449,6 @@ function buildDisplayMetadata(
   return metadata
 }
 
-// 统一的代码骨架屏占位，用于掩盖异步加载和滚动的 1 帧延迟
 function CodeSkeleton() {
   return (
     <div className="flex animate-pulse flex-col gap-3 p-6 min-h-[120px]">
@@ -391,7 +460,7 @@ function CodeSkeleton() {
 }
 
 export function DiffViewer({
-  files,
+  files: rawFiles,
   rawPatch: _rawPatch,
   repoPath,
   baseBranch,
@@ -414,8 +483,12 @@ export function DiffViewer({
   
   const [contentsByPath, setContentsByPath] = useState<Record<string, FileContentPair>>({})
   
-  // ====================== 关键修复：默认让前 5 个文件可见 ======================
-  // 避免进入页面或初期滑动时白屏闪烁
+  const files = useMemo(() => {
+    return [...rawFiles].sort((a, b) => 
+      getFilePath(a).localeCompare(getFilePath(b))
+    )
+  }, [rawFiles])
+
   const [visibleFiles, setVisibleFiles] = useState<Set<string>>(() => {
     return new Set(files.slice(0, 5).map(getFilePath))
   })
@@ -425,9 +498,24 @@ export function DiffViewer({
   const defaultHighlightEnabled = files.length <= 20
   const [highlightOverrides, setHighlightOverrides] = useState<Record<string, boolean>>({})
 
+  const shouldUseLineDiff = useCallback((filePath: string): boolean => {
+    const contentPair = contentsByPath[filePath]
+    if (!contentPair) return false
+
+    return shouldDisableHighlight(
+      filePath,
+      contentPair.oldFile.contents,
+      contentPair.newFile.contents
+    )
+  }, [contentsByPath])
+
   const isHighlighted = useCallback((filePath: string) => {
+    const useLineDiff = shouldUseLineDiff(filePath)
+    if (useLineDiff) {
+      return false
+    }
     return highlightOverrides[filePath] ?? defaultHighlightEnabled
-  }, [highlightOverrides, defaultHighlightEnabled])
+  }, [highlightOverrides, defaultHighlightEnabled, shouldUseLineDiff])
 
   const toggleHighlight = useCallback((filePath: string) => {
     setHighlightOverrides((prev) => ({
@@ -567,7 +655,12 @@ export function DiffViewer({
     }
   }, [selectedFile])
 
-  const diffOptions = useMemo<FileDiffOptions<ViewerAnnotation>>(() => {
+  /**
+   * 修复点 2：为包含中文的文件彻底禁用词级 Diff (word diff)
+   */
+  const getDiffOptionsForFile = useCallback((filePath: string): FileDiffOptions<ViewerAnnotation> => {
+    const useLineDiff = shouldUseLineDiff(filePath)
+
     return {
       theme: {
         dark: "github-dark",
@@ -576,14 +669,16 @@ export function DiffViewer({
       themeType: resolvedTheme === "dark" ? "dark" : "light",
       diffStyle: viewMode,
       overflow: wrapText ? "wrap" : "scroll",
-      lineDiffType: "word",
+      // 关键修复：直接使用 "none" 彻底关闭字符级差异计算。
+      // 之前使用的 "word-alt" 仍会计算内联差异并传递给 Shiki，从而引发 Token 越界。
+      lineDiffType: useLineDiff ? ("none" as any) : ("word" as const),
       diffIndicators: "bars",
       disableFileHeader: true,
       expandUnchanged: false,
       hunkSeparators: "line-info",
       expansionLineCount: 20,
     }
-  }, [resolvedTheme, viewMode, wrapText])
+  }, [resolvedTheme, viewMode, wrapText, shouldUseLineDiff])
 
   const getLineAnnotations = useCallback(
     (filePath: string): DiffLineAnnotation<ViewerAnnotation>[] => {
@@ -618,6 +713,17 @@ export function DiffViewer({
       onLineClick(filePath, props.lineNumber, fromAnnotationSide(props.annotationSide))
     },
     [onLineClick]
+  )
+
+  const handleDiffError = useCallback(
+    (errorFilePath: string) => {
+      console.log(`检测到 Shiki 渲染错误，自动禁用 ${errorFilePath} 的语法高亮`)
+      setHighlightOverrides((prev) => ({
+        ...prev,
+        [errorFilePath]: false,
+      }))
+    },
+    []
   )
 
   const handleCopyFile = useCallback(
@@ -721,7 +827,6 @@ export function DiffViewer({
                 </div>
               </div>
 
-              {/* ====================== 关键修复：统一的 Skeleton 骨架屏 ====================== */}
               {(!isVisible || !contentPair) && !file.isBinary && !file.contentOmitted ? (
                 <CodeSkeleton />
               ) : file.isBinary ? (
@@ -737,48 +842,54 @@ export function DiffViewer({
                   当前没有可展示的 diff 内容。
                 </div>
               ) : (
-                <FileDiff<ViewerAnnotation>
-                  key={`${filePath}-diff-${contentPair.newFile.contents.length}-${highlightEnabled}`}
-                  fileDiff={fileDiff}
-                  style={{ cursor: "pointer" }}
-                  options={{
-                    ...diffOptions,
-                    onLineClick: (props) => handleLineClick(filePath, props),
-                    onLineNumberClick: (props) =>
-                      handleLineClick(filePath, props),
-                  }}
-                  lineAnnotations={lineAnnotations}
-                  renderAnnotation={(annotation) => {
-                    if (annotation.metadata.type === "comment") {
-                      return (
-                        <div className="px-2 py-1">
-                          <InlineComment
-                            comment={annotation.metadata.comment}
-                            onResolve={onResolveComment}
-                            onUpdate={onUpdateComment}
-                            variant={commentVariant}
-                          />
-                        </div>
-                      )
-                    }
+                <DiffErrorBoundary
+                  key={`${filePath}-boundary-${highlightEnabled}`}
+                  filePath={filePath}
+                  onError={handleDiffError}
+                >
+                  <FileDiff<ViewerAnnotation>
+                    key={`${filePath}-diff-${contentPair.newFile.contents.length}-${highlightEnabled}`}
+                    fileDiff={fileDiff}
+                    style={{ cursor: "pointer" }}
+                    options={{
+                      ...getDiffOptionsForFile(filePath),
+                      onLineClick: (props) => handleLineClick(filePath, props),
+                      onLineNumberClick: (props) =>
+                        handleLineClick(filePath, props),
+                    }}
+                    lineAnnotations={lineAnnotations}
+                    renderAnnotation={(annotation) => {
+                      if (annotation.metadata.type === "comment") {
+                        return (
+                          <div className="px-2 py-1">
+                            <InlineComment
+                              comment={annotation.metadata.comment}
+                              onResolve={onResolveComment}
+                              onUpdate={onUpdateComment}
+                              variant={commentVariant}
+                            />
+                          </div>
+                        )
+                      }
 
-                    if (annotation.metadata.type === "draft") {
-                      return (
-                        <div className="px-2 py-2">
-                          <CommentEditor
-                            submitLabel="添加评论"
-                            onSubmit={async (content) => {
-                              await onSubmitComment?.(content)
-                            }}
-                            onCancel={() => onCancelComment?.()}
-                          />
-                        </div>
-                      )
-                    }
+                      if (annotation.metadata.type === "draft") {
+                        return (
+                          <div className="px-2 py-2">
+                            <CommentEditor
+                              submitLabel="添加评论"
+                              onSubmit={async (content) => {
+                                await onSubmitComment?.(content)
+                              }}
+                              onCancel={() => onCancelComment?.()}
+                            />
+                          </div>
+                        )
+                      }
 
-                    return null
-                  }}
-                />
+                      return null
+                    }}
+                  />
+                </DiffErrorBoundary>
               )}
             </div>
           )

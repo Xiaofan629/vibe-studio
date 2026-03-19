@@ -29,6 +29,7 @@ interface CommitFlowDialogProps {
   agentType?: AgentType
   workspaceTitle?: string | null
   workspacePrompt?: string | null
+  refreshKey?: number
   onClose: () => void
   onCommitted?: () => void
   onRequestCreatePr?: () => void
@@ -293,6 +294,7 @@ export function CommitFlowDialog({
   agentType,
   workspaceTitle,
   workspacePrompt,
+  refreshKey = 0,
   onClose,
   onCommitted,
   onRequestCreatePr,
@@ -388,7 +390,7 @@ export function CommitFlowDialog({
         setError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => setLoadingDiff(false))
-  }, [repoPath])
+  }, [repoPath, refreshKey])
 
   const rawPatchFiles = useMemo(() => parseRawPatchFiles(rawPatch), [rawPatch])
 

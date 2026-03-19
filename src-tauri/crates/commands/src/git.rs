@@ -14,6 +14,51 @@ fn read_git_file(repo_path: &std::path::Path, revision: &str, file_path: &str) -
     vibe_studio_git::cli::run_git(repo_path, &["show", &format!("{}:{}", revision, file_path)]).ok()
 }
 
+/// 解码 Git 转义的文件路径
+/// Git 会将非 ASCII 字符转义为八进制格式，如 `\346\212\230` 代表中文字符
+/// 这个函数将这些转义序列还原为实际的 UTF-8 字符
+fn unescape_git_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // 检查是否是转义序列开头 '\'
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            // 检查后面 3 个字节是否都是 ASCII 数字
+            let d1 = bytes[i + 1];
+            let d2 = bytes[i + 2];
+            let d3 = bytes[i + 3];
+
+            if d1.is_ascii_digit() && d2.is_ascii_digit() && d3.is_ascii_digit() {
+                // 解析八进制数（如 \346 -> 0o346 -> 230）
+                let octal_str = &[d1, d2, d3];
+                if let Ok(byte_val) = u8::from_str_radix(std::str::from_utf8(octal_str).unwrap(), 8) {
+                    result.push(byte_val);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
+        // 不是有效的转义序列，保留原始字节
+        result.push(bytes[i]);
+        i += 1;
+    }
+
+    String::from_utf8(result).unwrap_or_else(|_| path.to_string())
+}
+
+/// 清理 Git 路径：去除两端的双引号（如果存在），然后解码转义序列
+fn clean_git_path(path: &str) -> String {
+    let cleaned = if path.starts_with('"') && path.ends_with('"') {
+        &path[1..path.len() - 1]
+    } else {
+        path
+    };
+    unescape_git_path(cleaned)
+}
+
 #[derive(Serialize)]
 pub struct GitBranchResponse {
     pub name: String,
@@ -427,17 +472,20 @@ pub async fn git_diff_file_contents(
 
     let old_contents = old_path
         .as_deref()
-        .and_then(|path| read_git_file(repo_path, &old_ref, path))
+        .map(|path| clean_git_path(path))
+        .and_then(|decoded_path| read_git_file(repo_path, &old_ref, &decoded_path))
         .unwrap_or_default();
 
     let new_contents = match new_revision {
         Some(revision) => new_path
             .as_deref()
-            .and_then(|path| read_git_file(repo_path, &revision, path))
+            .map(|path| clean_git_path(path))
+            .and_then(|decoded_path| read_git_file(repo_path, &revision, &decoded_path))
             .unwrap_or_default(),
         None => new_path
             .as_deref()
-            .and_then(|path| std::fs::read_to_string(repo_path.join(path)).ok())
+            .map(|path| clean_git_path(path))
+            .and_then(|decoded_path| std::fs::read_to_string(repo_path.join(&decoded_path)).ok())
             .unwrap_or_default(),
     };
 

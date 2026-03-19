@@ -13,6 +13,32 @@ import {
   FolderOpen,
 } from "lucide-react"
 
+// Git 路径解码函数，用于处理中文等非 ASCII 字符
+function unescapeGitFilename(filename: string | null | undefined): string {
+  if (!filename) return ""
+  let cleaned = filename
+  // 去除两端可能由于转义而带上的双引号
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1)
+  }
+  try {
+    // 将八进制转义序列 \xxx 转换为 %XX，供 decodeURIComponent 还原为中文字符
+    const uriEncoded = cleaned.replace(/\\([0-7]{3})/g, (_, octal) => {
+      return '%' + parseInt(octal, 8).toString(16).padStart(2, '0')
+    })
+    // 顺便处理其他常见转义
+    return decodeURIComponent(
+      uriEncoded
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\')
+    )
+  } catch (e) {
+    // 如果解码失败，降级返回原样
+    return cleaned
+  }
+}
+
 interface DiffFileTreeProps {
   files: DiffFile[]
   selectedFile: string | null
@@ -121,23 +147,22 @@ function buildTree(
   const seenPaths = new Set<string>()
 
   for (const file of files) {
-    const fullPath = file.newPath ?? file.oldPath ?? "unknown"
+    const fullPath = unescapeGitFilename(file.newPath ?? file.oldPath ?? "unknown")
     seenPaths.add(fullPath)
     insertFileNode({ fullPath, file })
   }
 
   for (const fullPath of commentOnlyPaths) {
-    if (!fullPath || seenPaths.has(fullPath)) continue
-    insertFileNode({ fullPath, commentOnly: true })
+    const decodedPath = unescapeGitFilename(fullPath)
+    if (!decodedPath || seenPaths.has(decodedPath)) continue
+    insertFileNode({ fullPath: decodedPath, commentOnly: true })
   }
 
   const sortNodes = (nodes: TreeNode[]): TreeNode[] => {
     return [...nodes]
       .sort((a, b) => {
-        if (a.type !== b.type) {
-          return a.type === "folder" ? -1 : 1
-        }
-        return a.name.localeCompare(b.name)
+        // 按完整路径字母顺序排序，与 DiffViewer 保持一致
+        return a.path.localeCompare(b.path)
       })
       .map((node) => ({
         ...node,
@@ -163,6 +188,11 @@ export function DiffFileTree({
   commentOnlyPaths,
 }: DiffFileTreeProps) {
   const stableCommentOnlyPaths = commentOnlyPaths ?? EMPTY_COMMENT_PATHS
+  // 对 selectedFile 进行解码，以便与解码后的文件路径进行比较
+  const decodedSelectedFile = useMemo(
+    () => (selectedFile ? unescapeGitFilename(selectedFile) : null),
+    [selectedFile]
+  )
   const tree = useMemo(
     () => buildTree(files, stableCommentOnlyPaths),
     [files, stableCommentOnlyPaths]
@@ -221,7 +251,7 @@ export function DiffFileTree({
     }
 
     const file = node.file
-    const path = file?.newPath ?? file?.oldPath ?? node.path
+    const path = unescapeGitFilename(file?.newPath ?? file?.oldPath ?? node.path)
     const Icon = file ? (KIND_ICON[file.changeKind] ?? FileCode) : FileCode
     const commentCount = commentCounts?.[path] ?? 0
 
@@ -231,7 +261,7 @@ export function DiffFileTree({
         onClick={() => onSelect(path)}
         className={cn(
           "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors",
-          selectedFile === path
+          decodedSelectedFile === path
             ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-accent/50"
         )}

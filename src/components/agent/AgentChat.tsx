@@ -198,9 +198,19 @@ export function AgentChat({
         .getState()
         .switchWorkspace(prevWsId, prevAgentType, currentWsId, agentType)
       if (hadCache) {
-        // Cache hit — mark history as already loaded so we don't re-fetch from JSONL
-        const loadKey = `${currentWsId}:${historyPath}:${agentType}`
-        historyLoadedForRef.current = loadKey
+        const restoredState = useAgentStore.getState()
+        const hasRestoredLogs = restoredState.logs.length > 0
+        const hasActiveRuntime =
+          restoredState.status === "running" || !!restoredState.activeProcessId
+
+        if (hasRestoredLogs || hasActiveRuntime) {
+          // Cache hit with meaningful data — skip JSONL reload
+          const loadKey = `${currentWsId}:${historyPath}:${agentType}`
+          historyLoadedForRef.current = loadKey
+        } else {
+          // Cache hit but empty — force JSONL reload to avoid stale "no records"
+          historyLoadedForRef.current = null
+        }
       } else {
         // Cache miss — reset historyLoadedFor so the JSONL loader runs
         historyLoadedForRef.current = null
